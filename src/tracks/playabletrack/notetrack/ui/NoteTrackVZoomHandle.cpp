@@ -16,7 +16,7 @@ Paul Licameli split from TrackPanel.cpp
 
 #include "../../../../HitTestResult.h"
 #include "../../../../NoteTrack.h"
-#include "../../../../Project.h"
+#include "Project.h"
 #include "../../../../ProjectHistory.h"
 #include "../../../../RefreshCode.h"
 #include "../../../../TrackArtist.h"
@@ -103,6 +103,11 @@ UIHandlePtr NoteTrackVZoomHandle::HitTest
 
 NoteTrackVZoomHandle::~NoteTrackVZoomHandle()
 {
+}
+
+bool NoteTrackVZoomHandle::HandlesRightClick()
+{
+   return true;
 }
 
 UIHandle::Result NoteTrackVZoomHandle::Click

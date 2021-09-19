@@ -11,9 +11,7 @@
 
 **********************************************************************/
 
-
-
-#include "../ProjectSettings.h"
+#include "ProjectRate.h"
 
 #include <wx/app.h>
 #include <wx/button.h>
@@ -397,7 +395,7 @@ ProgressResult ExportCL::Export(AudacityProject *project,
    wxLogNull nolog;
 
    // establish parameters
-   int rate = lrint( ProjectSettings::Get( *project ).GetRate());
+   int rate = lrint( ProjectRate::Get( *project ).GetRate());
    const size_t maxBlockLen = 44100 * 5;
    unsigned long totalSamples = lrint((t1 - t0) * rate);
    unsigned long sampleBytes = totalSamples * channels * SAMPLE_SIZE(floatSample);
@@ -507,7 +505,7 @@ ProgressResult ExportCL::Export(AudacityProject *project,
                             mixerSpec);
 
    size_t numBytes = 0;
-   samplePtr mixed = NULL;
+   constSamplePtr mixed = NULL;
    auto updateResult = ProgressResult::Success;
 
    {
@@ -542,7 +540,7 @@ ProgressResult ExportCL::Export(AudacityProject *project,
             // Byte-swapping is necessary on big-endian machines, since
             // WAV files are little-endian
 #if wxBYTE_ORDER == wxBIG_ENDIAN
-            float *buffer = (float *) mixed;
+            auto buffer = (const float *) mixed;
             for (int i = 0; i < numBytes; i++) {
                buffer[i] = wxUINT32_SWAP_ON_BE(buffer[i]);
             }

@@ -14,6 +14,11 @@ set( LIBRARIES
    lib-math
    lib-files
    lib-registries
+   lib-xml
+   lib-audio-devices
+   lib-project
+   lib-screen-geometry
+   lib-project-rate
 )
 
 if ( ${_OPT}has_networking )

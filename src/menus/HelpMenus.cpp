@@ -6,7 +6,7 @@
 
 #include "../AboutDialog.h"
 #include "../AllThemeResources.h"
-#include "../AudioIOBase.h"
+#include "AudioIOBase.h"
 #include "../CommonCommandFlags.h"
 #include "../CrashReport.h" // for HAS_CRASH_REPORT
 #include "FileNames.h"
@@ -14,8 +14,9 @@
 #include "../LogWindow.h"
 #include "../Menus.h"
 #include "Prefs.h"
-#include "../Project.h"
+#include "Project.h"
 #include "../ProjectSelectionManager.h"
+#include "../ProjectWindows.h"
 #include "../SelectFile.h"
 #include "../ShuttleGui.h"
 #include "../SplashDialog.h"

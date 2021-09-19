@@ -22,11 +22,11 @@ Paul Licameli split from WaveTrackView.cpp
 #include "../../../../Envelope.h"
 #include "../../../../EnvelopeEditor.h"
 #include "../../../../ProjectSettings.h"
-#include "../../../../SelectedRegion.h"
+#include "SelectedRegion.h"
 #include "../../../../TrackArtist.h"
 #include "../../../../TrackPanelDrawingContext.h"
 #include "../../../../TrackPanelMouseEvent.h"
-#include "../../../../ViewInfo.h"
+#include "ViewInfo.h"
 #include "../../../../WaveClip.h"
 #include "../../../../WaveTrack.h"
 #include "../../../../prefs/WaveformSettings.h"
@@ -902,8 +902,7 @@ void DrawClipWaveform(TrackPanelDrawingContext &context,
       TrackArt::DrawNegativeOffsetTrackArrows( context, rect );
    }
    {
-      //increase virtual view size by px to hide edges that should not be visible
-      auto clipRect = ClipParameters::GetClipRect(*clip, zoomInfo, rect.Inflate(1, 0), 1);
+      auto clipRect = ClipParameters::GetClipRect(*clip, zoomInfo, rect);
       if (!clipRect.IsEmpty())
           TrackArt::DrawClipEdges(dc, clipRect, selected);
    }

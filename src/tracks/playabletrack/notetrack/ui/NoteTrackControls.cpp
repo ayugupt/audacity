@@ -23,8 +23,9 @@ Paul Licameli split from TrackPanel.cpp
 #include "../../../../TrackPanelMouseEvent.h"
 #include "../../../../NoteTrack.h"
 #include "../../../../widgets/PopupMenuTable.h"
-#include "../../../../Project.h"
+#include "Project.h"
 #include "../../../../ProjectHistory.h"
+#include "../../../../ProjectWindows.h"
 #include "../../../../RefreshCode.h"
 #include "../../../../prefs/ThemePrefs.h"
 
@@ -149,7 +150,7 @@ PopupMenuTable *NoteTrackControls::GetMenuExtension(Track *)
 #include "../../../../widgets/ASlider.h"
 #include "../../../../TrackInfo.h"
 #include "../../../../TrackPanelDrawingContext.h"
-#include "../../../../ViewInfo.h"
+#include "ViewInfo.h"
 
 using TCPLine = TrackInfo::TCPLine;
 

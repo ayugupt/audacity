@@ -24,7 +24,8 @@ This class now lists
 #include "GetInfoCommand.h"
 
 #include "LoadCommands.h"
-#include "../Project.h"
+#include "Project.h"
+#include "../ProjectWindows.h"
 #include "CommandManager.h"
 #include "CommandTargets.h"
 #include "../effects/EffectManager.h"
@@ -32,7 +33,7 @@ This class now lists
 #include "../TrackPanelAx.h"
 #include "../TrackPanel.h"
 #include "../WaveClip.h"
-#include "../ViewInfo.h"
+#include "ViewInfo.h"
 #include "../WaveTrack.h"
 #include "../LabelTrack.h"
 #include "../Envelope.h"

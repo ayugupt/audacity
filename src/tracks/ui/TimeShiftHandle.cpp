@@ -24,7 +24,7 @@ Paul Licameli split from TrackPanel.cpp
 #include "../../TrackPanelDrawingContext.h"
 #include "../../TrackPanelMouseEvent.h"
 #include "../../UndoManager.h"
-#include "../../ViewInfo.h"
+#include "ViewInfo.h"
 #include "../../../images/Cursors.h"
 
 TimeShiftHandle::TimeShiftHandle
@@ -959,6 +959,8 @@ UIHandle::Result TimeShiftHandle::Release
    if (mDidSlideVertically) {
       msg = XO("Moved clips to another track");
       consolidate = false;
+      for (auto& pair : mClipMoveState.shifters)
+         pair.first->LinkConsistencyCheck();
    }
    else {
       msg = ( mClipMoveState.hSlideAmount > 0

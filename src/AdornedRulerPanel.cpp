@@ -35,6 +35,7 @@
 #include "Project.h"
 #include "ProjectAudioIO.h"
 #include "ProjectAudioManager.h"
+#include "ProjectWindows.h"
 #include "ProjectStatus.h"
 #include "ProjectWindow.h"
 #include "RefreshCode.h"
@@ -43,7 +44,6 @@
 #include "TrackPanelMouseEvent.h"
 #include "UIHandle.h"
 #include "ViewInfo.h"
-#include "prefs/TracksBehaviorsPrefs.h"
 #include "prefs/TracksPrefs.h"
 #include "prefs/ThemePrefs.h"
 #include "toolbars/ToolBar.h"
@@ -425,7 +425,7 @@ public:
 
    unsigned DoContextMenu
       (const wxRect &rect,
-       wxWindow *pParent, wxPoint *pPosition, AudacityProject*) final override
+       wxWindow *pParent, const wxPoint *pPosition, AudacityProject*) final
    {
       (void)pParent;// Compiler food
       (void)rect;// Compiler food
@@ -460,6 +460,8 @@ public:
    }
 
 protected:
+   bool HandlesRightClick() override { return true; }
+
    Result Click
       (const TrackPanelMouseEvent &event, AudacityProject *) override
    {
@@ -855,7 +857,7 @@ std::vector<UIHandlePtr> AdornedRulerPanel::ScrubbingCell::HitTest
 }
 
 namespace{
-AudacityProject::AttachedWindows::RegisteredFactory sKey{
+AttachedWindows::RegisteredFactory sKey{
 []( AudacityProject &project ) -> wxWeakRef< wxWindow > {
    auto &viewInfo = ViewInfo::Get( project );
    auto &window = ProjectWindow::Get( project );
@@ -871,7 +873,7 @@ AudacityProject::AttachedWindows::RegisteredFactory sKey{
 
 AdornedRulerPanel &AdornedRulerPanel::Get( AudacityProject &project )
 {
-   return project.AttachedWindows::Get< AdornedRulerPanel >( sKey );
+   return GetAttachedWindows(project).Get< AdornedRulerPanel >( sKey );
 }
 
 const AdornedRulerPanel &AdornedRulerPanel::Get( const AudacityProject &project )
@@ -881,10 +883,10 @@ const AdornedRulerPanel &AdornedRulerPanel::Get( const AudacityProject &project 
 
 void AdornedRulerPanel::Destroy( AudacityProject &project )
 {
-   auto *pPanel = project.AttachedWindows::Find( sKey );
+   auto *pPanel = GetAttachedWindows(project).Find( sKey );
    if (pPanel) {
       pPanel->wxWindow::Destroy();
-      project.AttachedWindows::Assign( sKey, nullptr );
+      GetAttachedWindows(project).Assign( sKey, nullptr );
    }
 }
 
@@ -984,9 +986,7 @@ void AdornedRulerPanel::UpdatePrefs()
 #ifdef EXPERIMENTAL_SCROLLING_LIMITS
 #ifdef EXPERIMENTAL_TWO_TONE_TIME_RULER
    {
-      bool scrollBeyondZero = false;
-      gPrefs->Read(TracksBehaviorsPrefs::ScrollingPreferenceKey(), &scrollBeyondZero,
-                   TracksBehaviorsPrefs::ScrollingPreferenceDefault());
+      auto scrollBeyondZero = ScrollingPreference.Read();
       mRuler.SetTwoTone(scrollBeyondZero);
    }
 #endif

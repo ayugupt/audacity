@@ -37,6 +37,10 @@ public:
    
    virtual const Type &SubViewType() const = 0;
 
+   // For undo and redo purpose
+   // Empty abstract method to be inherited, for copying the spectral data in SpectrumSubView
+   virtual void CopyToSubView(WaveTrackSubView *destSubView) const;
+
    std::pair<
       bool, // if true, hit-testing is finished
       std::vector<UIHandlePtr>
@@ -52,8 +56,13 @@ protected:
 
    std::weak_ptr<WaveTrackView> GetWaveTrackView() const;
 
+   std::vector<MenuItem> GetMenuItems(
+      const wxRect &rect, const wxPoint *pPosition, AudacityProject *pProject )
+   override;
+
 private:
    std::weak_ptr<UIHandle> mCloseHandle;
+   std::weak_ptr<UIHandle> mResizeHandle;
    std::weak_ptr<UIHandle> mAdjustHandle;
    std::weak_ptr<UIHandle> mRearrangeHandle;
    std::weak_ptr<CutlineHandle> mCutlineHandle;
@@ -79,6 +88,8 @@ class AUDACITY_DLL_API WaveTrackView final
    WaveTrackView &operator=( const WaveTrackView& ) = delete;
 
 public:
+   static constexpr int kChannelSeparatorThickness{ 8 };
+
    using Display = WaveTrackViewConstants::Display;
 
    static WaveTrackView &Get( WaveTrack &track );
@@ -130,6 +141,26 @@ public:
 
    std::weak_ptr<WaveClip> GetSelectedClip();
 
+   // Returns a visible subset of subviews, sorted in the same 
+   // order as they are supposed to be displayed
+   
+
+   // Get the visible sub-views,
+   // if rect is provided then result will contain
+   // y coordinate for each subview within this rect
+   Refinement GetSubViews(const wxRect* rect = nullptr);
+
+   unsigned CaptureKey
+   (wxKeyEvent& event, ViewInfo& viewInfo, wxWindow* pParent,
+       AudacityProject* project) override;
+
+   unsigned KeyDown(wxKeyEvent& event, ViewInfo& viewInfo, wxWindow* pParent,
+       AudacityProject* project) override;
+
+   unsigned Char
+   (wxKeyEvent& event, ViewInfo& viewInfo, wxWindow* pParent,
+       AudacityProject* project) override;
+
 private:
    void BuildSubViews() const;
    void DoSetDisplay(Display display, bool exclusive = true);
@@ -145,11 +176,10 @@ private:
       override;
 
    // TrackView implementation
-   // Get the visible sub-views with top y coordinates
-   Refinement GetSubViews( const wxRect &rect ) override;
+   Refinement GetSubViews(const wxRect& rect) override;
 
 protected:
-   std::shared_ptr<CommonTrackCell> DoGetAffordanceControls() override;
+   std::shared_ptr<CommonTrackCell> GetAffordanceControls() override;
 
    void DoSetMinimized( bool minimized ) override;
 
@@ -160,6 +190,11 @@ protected:
    mutable wxCoord mLastHeight{};
 
    bool mMultiView{ false };
+
+private:
+   std::shared_ptr<CommonTrackCell> DoGetAffordance(const std::shared_ptr<Track>& track);
+
+   std::shared_ptr<CommonTrackCell> mpAffordanceCellControl;
 };
 
 // Helper for drawing routines
@@ -200,7 +235,7 @@ struct AUDACITY_DLL_API ClipParameters
 
    // returns a clip rectangle restricted by viewRect, 
    // and with clipOffsetX - clip horizontal origin offset within view rect
-   static wxRect GetClipRect(const WaveClip& clip, const ZoomInfo& zoomInfo, const wxRect& viewRect, int clipOffsetX = 0);
+   static wxRect GetClipRect(const WaveClip& clip, const ZoomInfo& zoomInfo, const wxRect& viewRect);
 };
 
 #endif

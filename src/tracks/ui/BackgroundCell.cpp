@@ -13,7 +13,7 @@ Paul Licameli split from TrackPanel.cpp
 
 #include "../../AColor.h"
 #include "../../HitTestResult.h"
-#include "../../Project.h"
+#include "Project.h"
 #include "../../RefreshCode.h"
 #include "../../SelectionState.h"
 #include "../../Track.h"
@@ -23,7 +23,7 @@ Paul Licameli split from TrackPanel.cpp
 #include "../../TrackPanelDrawingContext.h"
 #include "../../TrackPanelMouseEvent.h"
 #include "../../UIHandle.h"
-#include "../../ViewInfo.h"
+#include "ViewInfo.h"
 
 #include <wx/cursor.h>
 #include <wx/event.h>
@@ -148,4 +148,22 @@ wxRect BackgroundCell::DrawingArea(
       };
    else
       return rect;
+}
+
+auto BackgroundCell::GetMenuItems(
+   const wxRect &, const wxPoint *, AudacityProject * )
+      -> std::vector<MenuItem>
+{
+   // These commands exist in toolbar menus too, but maybe with other labels
+   // TODO: devise a system of registration so that BackgroundCell has no
+   // special knowledge about track sub-types
+   return {
+      { L"NewMonoTrack", XO("Add Mono Track")},
+      { L"NewStereoTrack", XO("Add Stereo Track") },
+      { L"NewLabelTrack", XO("Add Label Track"),  },
+      {},
+      { L"Export", XO("Export Audio..."),  },
+      {},
+      { L"SelectAll", XO("Select All") },
+   };
 }

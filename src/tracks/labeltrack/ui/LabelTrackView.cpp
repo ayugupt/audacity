@@ -20,10 +20,12 @@ Paul Licameli split from TrackPanel.cpp
 #include "../../../AColor.h"
 #include "../../../AllThemeResources.h"
 #include "../../../HitTestResult.h"
-#include "../../../Project.h"
+#include "Project.h"
 #include "../../../ProjectHistory.h"
+#include "ProjectRate.h"
 #include "../../../ProjectSettings.h"
 #include "../../../ProjectWindow.h"
+#include "../../../ProjectWindows.h"
 #include "../../../RefreshCode.h"
 #include "../../../Theme.h"
 #include "../../../TrackArtist.h"
@@ -31,7 +33,7 @@ Paul Licameli split from TrackPanel.cpp
 #include "../../../TrackPanel.h"
 #include "../../../TrackPanelMouseEvent.h"
 #include "../../../UndoManager.h"
-#include "../../../ViewInfo.h"
+#include "ViewInfo.h"
 #include "../../../widgets/AudacityTextEntryDialog.h"
 
 #include <wx/clipbrd.h>
@@ -2223,7 +2225,7 @@ void LabelTrackView::DoEditLabels
    auto format = settings.GetSelectionFormat(),
       freqFormat = settings.GetFrequencySelectionFormatName();
    auto &tracks = TrackList::Get( project );
-   auto rate = ProjectSettings::Get( project ).GetRate();
+   auto rate = ProjectRate::Get( project ).GetRate();
    auto &viewInfo = ViewInfo::Get( project );
    auto &window = ProjectWindow::Get( project );
 

@@ -51,9 +51,10 @@ audio tracks.
 #include "TrackPanelDrawingContext.h"
 #include "ViewInfo.h"
 
-#include "prefs/GUISettings.h"
+#include "Decibels.h"
 #include "prefs/TracksPrefs.h"
 
+#include <wx/app.h>
 #include <wx/dc.h>
 
 //Thickness of the clip frame outline, shown when clip is dragged
@@ -62,7 +63,7 @@ static constexpr int ClipSelectionStrokeSize{ 1 };//px
 TrackArtist::TrackArtist( TrackPanel *parent_ )
    : parent( parent_ )
 {
-   mdBrange = ENV_DB_RANGE;
+   mdBrange = DecibelScaleCutoff.GetDefault();
    mShowClipping = false;
    mSampleDisplay = 1;// Stem plots by default.
 
@@ -239,6 +240,41 @@ void TrackArt::DrawNegativeOffsetTrackArrows(
                 rect.x + 6, rect.y + rect.height - 12);
 }
 
+wxString TrackArt::TruncateText(wxDC& dc, const wxString& text, const int maxWidth)
+{
+   static const wxString ellipsis = "\u2026";
+
+   if (dc.GetTextExtent(text).GetWidth() <= maxWidth)
+       return text;
+
+   auto left = 0;
+   //no need to check text + '...'
+   auto right = static_cast<int>(text.Length() - 2);
+
+   while (left <= right)
+   {
+      auto middle = (left + right) / 2;
+      auto str = text.SubString(0, middle).Trim() + ellipsis;
+      auto strWidth = dc.GetTextExtent(str).GetWidth();
+      if (strWidth < maxWidth)
+         //if left == right (== middle), then exit loop 
+         //with right equals to the last knwon index for which 
+         //strWidth < maxWidth
+         left = middle + 1;
+      else if (strWidth > maxWidth)
+         //if right == left (== middle), then exit loop with
+         //right equals to (left - 1), which is the last known
+         //index for which (strWidth < maxWidth) or -1
+         right = middle - 1;
+      else
+         return str;
+   }
+   if (right >= 0)
+      return text.SubString(0, right).Trim() + ellipsis;
+
+   return wxEmptyString;
+}
+
 
 #ifdef USE_MIDI
 #endif // USE_MIDI
@@ -254,7 +290,7 @@ void TrackArtist::UpdateSelectedPrefs( int id )
 
 void TrackArtist::UpdatePrefs()
 {
-   mdBrange = gPrefs->Read(ENV_DB_KEY, mdBrange);
+   mdBrange = DecibelScaleCutoff.Read();
    mSampleDisplay = TracksPrefs::SampleViewChoice();
 
    UpdateSelectedPrefs( ShowClippingPrefsID() );
@@ -263,7 +299,7 @@ void TrackArtist::UpdatePrefs()
    SetColours(0);
 }
 
-void TrackArt::DrawClipAffordance(wxDC& dc, const wxRect& rect, bool highlight, bool selected)
+void TrackArt::DrawClipAffordance(wxDC& dc, const wxRect& rect, const wxString& title, bool highlight, bool selected)
 {
    if (selected)
    {
@@ -276,8 +312,31 @@ void TrackArt::DrawClipAffordance(wxDC& dc, const wxRect& rect, bool highlight, 
       AColor::UseThemeColour(&dc, clrClipAffordanceStroke, clrClipAffordanceStroke);
       dc.DrawRoundedRectangle(strokeRect, ClipFrameRadius);
    }
+
    AColor::UseThemeColour(&dc, highlight ? clrClipAffordanceActiveBrush : clrClipAffordanceInactiveBrush, clrClipAffordanceOutlinePen);
    dc.DrawRoundedRectangle(wxRect(rect.x, rect.y + ClipSelectionStrokeSize, rect.width, rect.height + ClipFrameRadius), ClipFrameRadius);
+
+   if (!title.empty())
+   {
+      auto titleRect = TrackArt::GetAffordanceTitleRect(rect); 
+
+      auto truncatedTitle = TrackArt::TruncateText(dc, title, titleRect.GetWidth());
+      if (!truncatedTitle.empty())
+      {
+          auto hAlign = wxTheApp->GetLayoutDirection() == wxLayout_RightToLeft ? wxALIGN_RIGHT : wxALIGN_LEFT;
+          dc.DrawLabel(truncatedTitle, titleRect, hAlign | wxALIGN_CENTER_VERTICAL);
+      }
+   }
+}
+
+AUDACITY_DLL_API wxRect TrackArt::GetAffordanceTitleRect(const wxRect& rect)
+{
+    constexpr int FrameThickness{ 1 };
+    return wxRect(
+        rect.GetLeft() + ClipFrameRadius,
+        rect.GetTop() + ClipSelectionStrokeSize + FrameThickness,
+        rect.GetWidth() - ClipFrameRadius * 2,
+        rect.GetHeight() - ClipSelectionStrokeSize - FrameThickness);
 }
 
 void TrackArt::DrawClipEdges(wxDC& dc, const wxRect& clipRect, bool selected)

@@ -34,11 +34,11 @@
 #include "../ProjectAudioManager.h"
 #include "../ProjectFileIO.h"
 #include "../ProjectSettings.h"
-#include "../prefs/QualitySettings.h"
+#include "QualitySettings.h"
 #include "../SelectFile.h"
 #include "../ShuttleGui.h"
 #include "../Shuttle.h"
-#include "../ViewInfo.h"
+#include "ViewInfo.h"
 #include "../WaveTrack.h"
 #include "wxFileNameWrapper.h"
 #include "../widgets/ProgressDialog.h"
@@ -2396,8 +2396,8 @@ void Effect::Preview(bool dryOnly)
          mixRight->Offset(-mixRight->GetStartTime());
          mixRight->SetSelected(true);
          pRight = mTracks->Add( mixRight );
+         mTracks->MakeMultiChannelTrack(*pLeft, 2, true);
       }
-      mTracks->GroupChannels(*pLeft, pRight ? 2 : 1);
    }
    else {
       for (auto src : saveTracks->Any< const WaveTrack >()) {

@@ -57,6 +57,7 @@ is time to refresh some aspect of the screen.
 #include "ProjectAudioIO.h"
 #include "ProjectAudioManager.h"
 #include "ProjectHistory.h"
+#include "ProjectWindows.h"
 #include "ProjectSettings.h"
 #include "ProjectStatus.h"
 #include "ProjectWindow.h"
@@ -93,6 +94,7 @@ is time to refresh some aspect of the screen.
 #include <wx/graphics.h>
 
 static_assert( kVerticalPadding == kTopMargin + kBottomMargin );
+static_assert( kTrackInfoBtnSize == kAffordancesAreaHeight, "Drag bar is misaligned with the menu button");
 
 /**
 
@@ -198,7 +200,7 @@ std::unique_ptr<wxCursor> MakeCursor( int WXUNUSED(CursorId), const char * const
 
 namespace{
 
-AudacityProject::AttachedWindows::RegisteredFactory sKey{
+AttachedWindows::RegisteredFactory sKey{
    []( AudacityProject &project ) -> wxWeakRef< wxWindow > {
       auto &ruler = AdornedRulerPanel::Get( project );
       auto &viewInfo = ViewInfo::Get( project );
@@ -215,7 +217,7 @@ AudacityProject::AttachedWindows::RegisteredFactory sKey{
          &viewInfo,
          &project,
          &ruler);
-      project.SetPanel( result );
+      SetProjectPanel( project, *result );
       return result;
    }
 };
@@ -224,7 +226,7 @@ AudacityProject::AttachedWindows::RegisteredFactory sKey{
 
 TrackPanel &TrackPanel::Get( AudacityProject &project )
 {
-   return project.AttachedWindows::Get< TrackPanel >( sKey );
+   return GetAttachedWindows(project).Get< TrackPanel >( sKey );
 }
 
 const TrackPanel &TrackPanel::Get( const AudacityProject &project )
@@ -234,10 +236,10 @@ const TrackPanel &TrackPanel::Get( const AudacityProject &project )
 
 void TrackPanel::Destroy( AudacityProject &project )
 {
-   auto *pPanel = project.AttachedWindows::Find( sKey );
+   auto *pPanel = GetAttachedWindows(project).Find<TrackPanel>( sKey );
    if (pPanel) {
       pPanel->wxWindow::Destroy();
-      project.AttachedWindows::Assign( sKey, nullptr );
+      GetAttachedWindows(project).Assign(sKey, nullptr);
    }
 }
 
@@ -844,6 +846,7 @@ void TrackPanel::DrawTracks(wxDC * dc)
    bool bigPointsFlag  =
       bMultiToolDown || (ToolCodes::drawTool == settings.GetTool());
    bool sliderFlag     = bMultiToolDown;
+   bool brushFlag   = (ToolCodes::brushTool == settings.GetTool());
 
    const bool hasSolo = GetTracks()->Any< PlayableTrack >()
       .any_of( []( const PlayableTrack *pt ) {
@@ -855,6 +858,7 @@ void TrackPanel::DrawTracks(wxDC * dc)
    mTrackArtist->drawEnvelope = envelopeFlag;
    mTrackArtist->bigPoints = bigPointsFlag;
    mTrackArtist->drawSliders = sliderFlag;
+   mTrackArtist->onBrushTool = brushFlag;
    mTrackArtist->hasSolo = hasSolo;
 
    this->CellularPanel::Draw( context, TrackArtist::NPasses );
@@ -1708,7 +1712,7 @@ std::vector<wxRect> TrackPanel::FindRulerRects( const Track *target )
 TrackPanelCell *TrackPanel::GetFocusedCell()
 {
    auto pTrack = TrackFocus::Get( *GetProject() ).Get();
-   return pTrack ? &TrackView::Get( *pTrack ) : nullptr;
+   return pTrack ? &TrackView::Get( *pTrack ) : GetBackgroundCell().get();
 }
 
 void TrackPanel::SetFocusedCell()

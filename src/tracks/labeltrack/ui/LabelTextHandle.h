@@ -12,7 +12,7 @@ Paul Licameli split from TrackPanel.cpp
 #define __AUDACITY_LABEL_TEXT_HANDLE__
 
 #include "LabelDefaultClickHandle.h"
-#include "../../../SelectedRegion.h"
+#include "SelectedRegion.h"
 
 class wxMouseState;
 class LabelTrack;
@@ -39,6 +39,8 @@ public:
    int GetLabelNum() const { return mLabelNum; }
 
    void Enter(bool forward, AudacityProject *) override;
+
+   bool HandlesRightClick() override;
 
    Result Click
       (const TrackPanelMouseEvent &event, AudacityProject *pProject) override;

@@ -20,7 +20,7 @@ Paul Licameli split from TrackPanel.cpp
 #include "../../../RefreshCode.h"
 #include "../../../SelectionState.h"
 #include "../../../TrackPanelMouseEvent.h"
-#include "../../../ViewInfo.h"
+#include "ViewInfo.h"
 #include "../../../../images/Cursors.h"
 
 #include <wx/clipbrd.h>
@@ -139,6 +139,11 @@ void LabelTextHandle::HandleTextClick(AudacityProject &project, const wxMouseEve
       }
 #endif
    }
+}
+
+bool LabelTextHandle::HandlesRightClick()
+{
+   return true;
 }
 
 UIHandle::Result LabelTextHandle::Click

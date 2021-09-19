@@ -6,17 +6,18 @@
 #include "../NoteTrack.h"
 #include "Prefs.h"
 #include "../Printing.h"
-#include "../Project.h"
+#include "Project.h"
 #include "../ProjectFileIO.h"
 #include "../ProjectFileManager.h"
 #include "../ProjectHistory.h"
 #include "../ProjectManager.h"
+#include "../ProjectWindows.h"
 #include "../ProjectWindow.h"
 #include "../SelectFile.h"
 #include "../SelectUtilities.h"
 #include "../TrackPanel.h"
 #include "../UndoManager.h"
-#include "../ViewInfo.h"
+#include "ViewInfo.h"
 #include "../WaveTrack.h"
 #include "../commands/CommandContext.h"
 #include "../commands/CommandManager.h"
@@ -66,7 +67,7 @@ void DoExport(AudacityProject &project, const FileExtension &format)
       // or we use the default documents folder - just as for exports.
       FilePath pathName = FileNames::FindDefaultPath(FileNames::Operation::MacrosOut);
 
-      if (!FileNames::WritableLocationCheck(pathName))
+      if (!FileNames::WritableLocationCheck(pathName, XO("Cannot proceed to export.")))
       {
           return;
       }

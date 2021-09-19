@@ -20,12 +20,15 @@ Paul Licameli split from ProjectManager.cpp
 #include "CommonCommandFlags.h"
 #include "LabelTrack.h"
 #include "Menus.h"
+#include "Meter.h"
 #include "Project.h"
 #include "ProjectAudioIO.h"
 #include "ProjectFileIO.h"
 #include "ProjectHistory.h"
+#include "ProjectRate.h"
 #include "ProjectSettings.h"
 #include "ProjectStatus.h"
+#include "ProjectWindows.h"
 #include "TimeTrack.h"
 #include "TrackPanelAx.h"
 #include "UndoManager.h"
@@ -644,7 +647,16 @@ bool ProjectAudioManager::DoRecord(AudacityProject &project,
             // Less than or equal, not just less than, to ensure a clip boundary.
             // when append recording.
             if (endTime <= t0) {
-               pending->CreateClip(t0);
+               auto newName = [&]() {
+                  for (auto i = 1;; ++i)
+                  {
+                     //i18n-hint a numerical suffix added to distinguish otherwise like-named clips when new record started
+                     auto name = XC("%s #%d", "clip name template").Format(pending->GetName(), i).Translation();
+                     if (pending->FindClipByName(name) == nullptr)
+                        return name;
+                  }
+               }();
+               pending->CreateClip(t0, newName);
             }
             transportTracks.captureTracks.push_back(pending);
          }
@@ -728,7 +740,7 @@ bool ProjectAudioManager::DoRecord(AudacityProject &project,
 
             transportTracks.captureTracks.push_back(newTrack);
          }
-         TrackList::Get( *p ).GroupChannels(*first, recordingChannels);
+         TrackList::Get( *p ).MakeMultiChannelTrack(*first, recordingChannels, true);
          // Bug 1548.  First of new tracks needs the focus.
          TrackFocus::Get(*p).Set(first);
          if (TrackList::Get(*p).back())
@@ -1001,7 +1013,7 @@ DefaultPlayOptions( AudacityProject &project )
 {
    auto &projectAudioIO = ProjectAudioIO::Get( project );
    AudioIOStartStreamOptions options { &project,
-      ProjectSettings::Get( project ).GetRate() };
+      ProjectRate::Get( project ).GetRate() };
    options.captureMeter = projectAudioIO.GetCaptureMeter();
    options.playbackMeter = projectAudioIO.GetPlaybackMeter();
    auto timeTrack = *TrackList::Get( project ).Any<TimeTrack>().begin();
@@ -1013,20 +1025,15 @@ DefaultPlayOptions( AudacityProject &project )
 AudioIOStartStreamOptions
 DefaultSpeedPlayOptions( AudacityProject &project )
 {
-   auto &projectAudioIO = ProjectAudioIO::Get( project );
+   auto result = DefaultPlayOptions( project );
    auto gAudioIO = AudioIO::Get();
    auto PlayAtSpeedRate = gAudioIO->GetBestRate(
       false,     //not capturing
       true,      //is playing
-      ProjectSettings::Get( project ).GetRate()  //suggested rate
+      ProjectRate::Get( project ).GetRate()  //suggested rate
    );
-   AudioIOStartStreamOptions options{ &project, PlayAtSpeedRate };
-   options.captureMeter = projectAudioIO.GetCaptureMeter();
-   options.playbackMeter = projectAudioIO.GetPlaybackMeter();
-   auto timeTrack = *TrackList::Get( project ).Any<TimeTrack>().begin();
-   options.envelope = timeTrack ? timeTrack->GetEnvelope() : nullptr;
-   options.listener = ProjectAudioManager::Get( project ).shared_from_this();
-   return options;
+   result.rate = PlayAtSpeedRate;
+   return result;
 }
 
 #ifdef EXPERIMENTAL_MIDI_OUT

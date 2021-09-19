@@ -55,12 +55,12 @@ with changes in the SelectionBar.
 #include "../AColor.h"
 #include "../KeyboardCapture.h"
 #include "Prefs.h"
-#include "../Project.h"
+#include "Project.h"
 #include "../ProjectAudioIO.h"
 #include "../ProjectSettings.h"
 #include "../Snap.h"
-#include "../ViewInfo.h"
-#include "../prefs/QualitySettings.h"
+#include "ViewInfo.h"
+#include "QualitySettings.h"
 #include "../AllThemeResources.h"
 
 #if wxUSE_ACCESSIBILITY

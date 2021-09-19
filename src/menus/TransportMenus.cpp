@@ -3,16 +3,18 @@
 #include "../AdornedRulerPanel.h"
 #include "../AudioIO.h"
 #include "../CommonCommandFlags.h"
-#include "../DeviceManager.h"
+#include "DeviceManager.h"
 #include "../LabelTrack.h"
 #include "../Menus.h"
 #include "Prefs.h"
-#include "../Project.h"
+#include "Project.h"
 #include "../ProjectAudioIO.h"
 #include "../ProjectAudioManager.h"
 #include "../ProjectFileIO.h"
 #include "../ProjectHistory.h"
+#include "ProjectRate.h"
 #include "../ProjectSettings.h"
+#include "../ProjectWindows.h"
 #include "../ProjectWindow.h"
 #include "../ProjectManager.h"
 #include "../SoundActivatedRecord.h"
@@ -24,7 +26,7 @@
 #include "../prefs/RecordingPrefs.h"
 #include "../prefs/TracksPrefs.h"
 #include "../WaveTrack.h"
-#include "../ViewInfo.h"
+#include "ViewInfo.h"
 #include "../commands/CommandContext.h"
 #include "../commands/CommandManager.h"
 #include "../toolbars/ControlToolBar.h"
@@ -408,7 +410,8 @@ void OnTimerRecord(const CommandContext &context)
 
    const auto existingTracks{ ProjectAudioManager::ChooseExistingRecordingTracks(project, true, rateOfSelected) };
    if (existingTracks.empty()) {
-      if (numberOfSelected > 0 && rateOfSelected != settings.GetRate()) {
+      if (numberOfSelected > 0 && rateOfSelected !=
+          ProjectRate::Get(project).GetRate()) {
          AudacityMessageBox(XO(
             "Too few tracks are selected for recording at this sample rate.\n"
             "(Audacity requires two channels at the same sample rate for\n"
