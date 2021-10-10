@@ -22,6 +22,16 @@ class TranslatableString;
 class WaveTrack;
 class WaveTrackView;
 class WaveClip;
+class WaveClipTrimHandle;
+
+
+class TrackPanelResizeHandle;
+
+namespace {
+   class SubViewCloseHandle;
+   class SubViewAdjustHandle;
+   class SubViewRearrangeHandle;
+}
 
 class wxDC;
 
@@ -61,10 +71,11 @@ protected:
    override;
 
 private:
-   std::weak_ptr<UIHandle> mCloseHandle;
-   std::weak_ptr<UIHandle> mResizeHandle;
-   std::weak_ptr<UIHandle> mAdjustHandle;
-   std::weak_ptr<UIHandle> mRearrangeHandle;
+   std::weak_ptr<SubViewCloseHandle> mCloseHandle;
+   std::weak_ptr<TrackPanelResizeHandle> mResizeHandle;
+   std::weak_ptr<SubViewAdjustHandle> mAdjustHandle;
+   std::weak_ptr<SubViewRearrangeHandle> mRearrangeHandle;
+   std::weak_ptr<WaveClipTrimHandle> mClipTrimHandle;
    std::weak_ptr<CutlineHandle> mCutlineHandle;
    std::weak_ptr<WaveTrackView> mwWaveTrackView;
 };
@@ -161,6 +172,8 @@ public:
    (wxKeyEvent& event, ViewInfo& viewInfo, wxWindow* pParent,
        AudacityProject* project) override;
 
+   unsigned LoseFocus(AudacityProject *project) override;
+
 private:
    void BuildSubViews() const;
    void DoSetDisplay(Display display, bool exclusive = true);
@@ -195,6 +208,8 @@ private:
    std::shared_ptr<CommonTrackCell> DoGetAffordance(const std::shared_ptr<Track>& track);
 
    std::shared_ptr<CommonTrackCell> mpAffordanceCellControl;
+
+   std::weak_ptr<TrackPanelCell> mKeyEventDelegate;
 };
 
 // Helper for drawing routines

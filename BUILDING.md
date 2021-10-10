@@ -156,6 +156,11 @@ cmake -GXcode -T buildsystem=1 -Daudacity_use_mad="off" -Daudacity_use_id3tag=of
 
 You can use `cmake -LH` to get a list of the options available (or use CMake GUI or `ccmake`). The list will include documentation about each option. For convenience, [here is a list](CMAKE_OPTIONS.md) of the most notable options.
 
+### Building with ASIO support on Windows
+
+To enable ASIO support on Windows, please pass `audacity_has_asio_support=On` to CMake during the configuration. 
+ASIO is only supported on Windows and only for 64-bit builds.
+
 ### Building using system libraries
 
 On Linux it is possible to build Audacity using (almost) only the libraries provided by the package manager. Please, see the list of required libraries [here](linux/required_libraries.md).
@@ -195,7 +200,7 @@ This option implies `-Daudacity_obey_system_dependencies=On` and disables `local
 
 ### Disabling pre-built binaries downloads for Conan
 
-It is possible to force Conan to build all the dependencies from the source code without using the pre-built binaries. To do so, please pass `-Daudaicity_conan_allow_prebuilt_binaries=Off` to CMake during the configration. This option will trigger rebuild every
+It is possible to force Conan to build all the dependencies from the source code without using the pre-built binaries. To do so, please pass `-Daudaicity_conan_allow_prebuilt_binaries=Off` to CMake during the configuration. This option will trigger rebuild every
 time CMake configuration changes.
 
 ### Reducing Conan cache size

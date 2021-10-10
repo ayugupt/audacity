@@ -37,70 +37,30 @@ using PRCrossfadeData = std::vector< std::vector < float > >;
 
 #define BAD_STREAM_TIME (-DBL_MAX)
 
-// For putting an increment of work in the scrubbing queue
-struct ScrubbingOptions {
-   ScrubbingOptions() {}
-
-   bool adjustStart {};
-
-   // usually from TrackList::GetEndTime()
-   double maxTime {};
-   double minTime {};
-
-   bool bySpeed {};
-   bool isPlayingAtSpeed{};
-   bool isKeyboardScrubbing{};
-
-   double delay {};
-
-   // Initial and limiting values for the speed of a scrub interval:
-   double initSpeed { 1.0 };
-   double minSpeed { 0.0 };
-   double maxSpeed { 1.0 };
-
-
-   // When maximum speed scrubbing skips to follow the mouse,
-   // this is the minimum amount of playback allowed at the maximum speed:
-   double minStutterTime {};
-
-   static double MaxAllowedScrubSpeed()
-   { return 32.0; } // Is five octaves enough for your amusement?
-   static double MinAllowedScrubSpeed()
-   { return 0.01; } // Mixer needs a lower bound speed.  Scrub no slower than this.
-};
+class PlaybackPolicy;
 
 // To avoid growing the argument list of StartStream, add fields here
 struct AudioIOStartStreamOptions
 {
    explicit
-   AudioIOStartStreamOptions(AudacityProject *pProject_, double rate_)
-      : pProject{ pProject_ }
+   AudioIOStartStreamOptions(
+      const std::shared_ptr<AudacityProject> &pProject, double rate_)
+      : pProject{ pProject }
       , envelope(nullptr)
       , rate(rate_)
-      , playLooped(false)
-      , cutPreviewGapStart(0.0)
-      , cutPreviewGapLen(0.0)
       , pStartTime(NULL)
       , preRoll(0.0)
    {}
 
-   AudacityProject *pProject{};
+   std::shared_ptr<AudacityProject> pProject;
    std::weak_ptr<Meter> captureMeter, playbackMeter;
    const BoundedEnvelope *envelope; // for time warping
    std::shared_ptr< AudioIOListener > listener;
    double rate;
-   bool playLooped;
-   double cutPreviewGapStart;
-   double cutPreviewGapLen;
    double * pStartTime;
    double preRoll;
 
-#ifdef EXPERIMENTAL_SCRUBBING_SUPPORT
-   // Non-null value indicates that scrubbing will happen
-   // (do not specify a time track, looping, or recording, which
-   //  are all incompatible with scrubbing):
-   ScrubbingOptions *pScrubbingOptions {};
-#endif
+   bool playNonWaveTracks{ true };
 
    // contents may get swapped with empty vector
    PRCrossfadeData      *pCrossfadeData{};
@@ -109,6 +69,28 @@ struct AudioIOStartStreamOptions
    // we can't use a separate polling thread.
    // The return value is a number of milliseconds to sleep before calling again
    std::function< unsigned long() > playbackStreamPrimer;
+
+   using PolicyFactory = std::function< std::unique_ptr<PlaybackPolicy>() >;
+   PolicyFactory policyFactory;
+};
+
+struct AudioIODiagnostics{
+   wxString filename;    // For crash report bundle
+   wxString text;        // One big string, may be localized
+   wxString description; // Non-localized short description
+};
+
+//! Abstract interface to alternative, concurrent playback with the main audio (such as MIDI events)
+class AUDIO_DEVICES_API AudioIOExtBase
+{
+public:
+   virtual ~AudioIOExtBase();
+
+   // Formerly in AudioIOBase
+   virtual bool IsOtherStreamActive() const = 0;
+
+   //! Get diagnostic information for audio devices and also for extensions
+   virtual AudioIODiagnostics Dump() const = 0;
 };
 
 ///\brief A singleton object supporting queries of the state of any active
@@ -119,12 +101,16 @@ class AUDIO_DEVICES_API AudioIOBase /* not final */
 public:
    static AudioIOBase *Get();
 
+   AudioIOBase();
    virtual ~AudioIOBase();
 
+   AudioIOBase(const AudioIOBase &) = delete;
+   AudioIOBase &operator=(const AudioIOBase &) = delete;
+
    void SetCaptureMeter(
-      AudacityProject *project, const std::weak_ptr<Meter> &meter);
+      const std::shared_ptr<AudacityProject> &project, const std::weak_ptr<Meter> &meter);
    void SetPlaybackMeter(
-      AudacityProject *project, const std::weak_ptr<Meter> &meter);
+      const std::shared_ptr<AudacityProject> &project, const std::weak_ptr<Meter> &meter);
 
    /** \brief update state after changing what audio devices are selected
     *
@@ -205,12 +191,10 @@ public:
    /** \brief Get diagnostic information on all the available audio I/O devices
     *
     */
-   wxString GetDeviceInfo();
+   wxString GetDeviceInfo() const;
 
-#ifdef EXPERIMENTAL_MIDI_OUT
-   /** \brief Get diagnostic information on all the available MIDI I/O devices */
-   wxString GetMidiDeviceInfo();
-#endif
+   //! Get diagnostic information for audio devices and also for extensions
+   std::vector<AudioIODiagnostics> GetAllDeviceInfo();
 
    /** \brief Find out if playback / recording is currently paused */
    bool IsPaused() const;
@@ -256,16 +240,10 @@ protected:
    static wxString DeviceName(const PaDeviceInfo* info);
    static wxString HostName(const PaDeviceInfo* info);
 
-   AudacityProject    *mOwningProject;
+   std::weak_ptr<AudacityProject> mOwningProject;
 
    /// True if audio playback is paused
    bool                mPaused;
-
-   /// True when output reaches mT1
-   bool             mMidiOutputComplete{ true };
-
-   /// mMidiStreamActive tells when mMidiStream is open for output
-   bool             mMidiStreamActive;
 
    volatile int        mStreamToken;
 
@@ -335,9 +313,12 @@ protected:
    static const int RatesToTry[];
    /** \brief How many sample rates to try */
    static const int NumRatesToTry;
-};
 
-#endif
+   /*! This class needs to iterate this array for one limited purpose but does
+    not populate it and does not give access to it except to subclasses
+    */
+   std::vector<std::unique_ptr<AudioIOExtBase>> mAudioIOExt;
+};
 
 #include "Prefs.h"
 
@@ -349,3 +330,5 @@ extern AUDIO_DEVICES_API IntSetting    AudioIORecordChannels;
 extern AUDIO_DEVICES_API StringSetting AudioIORecordingDevice;
 extern AUDIO_DEVICES_API StringSetting AudioIORecordingSource;
 extern AUDIO_DEVICES_API IntSetting    AudioIORecordingSourceIndex;
+
+#endif

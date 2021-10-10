@@ -13,6 +13,8 @@
 #include <wx/dc.h>
 
 #include "../../../ui/AffordanceHandle.h"
+#include "../../../ui/SelectHandle.h"
+#include "../../../ui/TrackView.h"
 #include "../../../../AllThemeResources.h"
 #include "../../../../AColor.h"
 #include "../../../../NoteTrack.h"
@@ -83,6 +85,17 @@ std::vector<UIHandlePtr> NoteTrackAffordanceControls::HitTest(const TrackPanelMo
         results.push_back(NoteTrackAffordanceHandle::HitAnywhere(mAffordanceHandle, track));
     }
 
+    const auto& settings = ProjectSettings::Get(*pProject);
+    const auto currentTool = settings.GetTool();
+    if (currentTool == ToolCodes::multiTool || currentTool == ToolCodes::selectTool)
+    {
+        results.push_back(
+            SelectHandle::HitTest(
+                mSelectHandle, state, pProject, std::static_pointer_cast<TrackView>(track->GetTrackView())
+            )
+        );
+    }
+
     return results;
 }
 
@@ -107,12 +120,13 @@ void NoteTrackAffordanceControls::Draw(TrackPanelDrawingContext& context, const 
             (px >= clipRect.GetLeft() && px <= clipRect.GetRight() &&
                 py >= clipRect.GetTop() && py <= clipRect.GetBottom());
 
-        context.dc.SetClippingRegion(rect);
-        context.dc.SetTextBackground(wxTransparentColor);
-        context.dc.SetTextForeground(theTheme.Colour(clrClipNameText));
-        context.dc.SetFont(wxFont(wxFontInfo()));
-        TrackArt::DrawClipAffordance(context.dc, clipRect, nt->GetName(), highlight, selected);
-        context.dc.DestroyClippingRegion();
+        {
+            wxDCClipper clipper(context.dc, rect);
+            context.dc.SetTextBackground(wxTransparentColor);
+            context.dc.SetTextForeground(theTheme.Colour(clrClipNameText));
+            context.dc.SetFont(wxFont(wxFontInfo()));
+            TrackArt::DrawClipAffordance(context.dc, clipRect, nt->GetName(), highlight, selected);
+        }
     }
 }
 

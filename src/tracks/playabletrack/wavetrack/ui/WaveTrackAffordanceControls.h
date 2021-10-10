@@ -20,10 +20,12 @@
 struct TrackListEvent;
 
 class AffordanceHandle;
+class SelectHandle;
 class WaveClip;
 class TrackPanelResizeHandle;
 class WaveClipTitleEditHandle;
 class WaveTrackAffordanceHandle;
+class WaveClipTrimHandle;
 class TrackList;
 
 //Handles clip movement, selection, navigation and
@@ -38,6 +40,8 @@ class AUDACITY_DLL_API WaveTrackAffordanceControls :
     std::weak_ptr<WaveTrackAffordanceHandle> mAffordanceHandle;
     std::weak_ptr<TrackPanelResizeHandle> mResizeHandle;
     std::weak_ptr<WaveClipTitleEditHandle> mTitleEditHandle;
+    std::weak_ptr<SelectHandle> mSelectHandle;
+    std::weak_ptr<WaveClipTrimHandle> mClipTrimHandle;
 
     std::shared_ptr<TextEditHelper> mTextEditHelper;
 
@@ -68,6 +72,8 @@ public:
     (wxKeyEvent& event, ViewInfo& viewInfo, wxWindow* pParent,
         AudacityProject* project) override;
 
+    unsigned LoseFocus(AudacityProject *project) override;
+
     void OnTextEditFinished(AudacityProject* project, const wxString& text) override;
     void OnTextEditCancelled(AudacityProject* project) override;
     void OnTextModified(AudacityProject* project, const wxString& text) override;
@@ -80,6 +86,8 @@ public:
 
 private:
     void OnTrackChanged(TrackListEvent& evt);
+
+    unsigned ExitTextEditing();
 
     bool SelectNextClip(ViewInfo& viewInfo, AudacityProject* project, bool forward);
 

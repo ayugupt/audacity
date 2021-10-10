@@ -28,6 +28,7 @@
 #include "AColor.h"
 #include "AllThemeResources.h"
 #include "AudioIO.h"
+#include "widgets/BasicMenu.h"
 #include "CellularPanel.h"
 #include "HitTestResult.h"
 #include "Menus.h"
@@ -39,6 +40,7 @@
 #include "ProjectStatus.h"
 #include "ProjectWindow.h"
 #include "RefreshCode.h"
+#include "SelectUtilities.h"
 #include "Snap.h"
 #include "Track.h"
 #include "TrackPanelMouseEvent.h"
@@ -52,6 +54,7 @@
 #include "widgets/AButton.h"
 #include "widgets/AudacityMessageBox.h"
 #include "widgets/Grabber.h"
+#include "widgets/wxWidgetsWindowPlacement.h"
 
 #include <wx/dcclient.h>
 #include <wx/menu.h>
@@ -1161,6 +1164,7 @@ void AdornedRulerPanel::DoIdle()
      || dirtySelectedRegion
      || mLastDrawnH != viewInfo.h
      || mLastDrawnZoom != viewInfo.GetZoom()
+     || mLastPlayRegionLocked != viewInfo.playRegion.Locked()
    ;
    if (changed)
       // Cause ruler redraw anyway, because we may be zooming or scrolling,
@@ -1261,9 +1265,7 @@ void AdornedRulerPanel::DoSelectionChange( const SelectedRegion &selectedRegion 
 {
 
    auto gAudioIO = AudioIOBase::Get();
-   if ( !gAudioIO->IsBusy() &&
-      !ViewInfo::Get( *mProject ).playRegion.Locked()
-   ) {
+   if ( !ViewInfo::Get( *mProject ).playRegion.Locked() ) {
       SetPlayRegion( selectedRegion.t0(), selectedRegion.t1() );
    }
 }
@@ -1385,7 +1387,7 @@ void AdornedRulerPanel::HandleQPClick(wxMouseEvent &evt, wxCoord mousePosX)
    // Temporarily unlock locked play region
    if (mOldPlayRegion.Locked() && evt.LeftDown()) {
       //mPlayRegionLock = true;
-      UnlockPlayRegion();
+      SelectUtilities::UnlockPlayRegion(*mProject);
    }
 
    mLeftDownClickUnsnapped = mQuickPlayPosUnsnapped;
@@ -1638,7 +1640,7 @@ void AdornedRulerPanel::HandleQPRelease(wxMouseEvent &evt)
       if (mOldPlayRegion.Locked()) {
          // Restore Locked Play region
          SetPlayRegion(mOldPlayRegion.GetStart(), mOldPlayRegion.GetEnd());
-         LockPlayRegion();
+         SelectUtilities::LockPlayRegion(*mProject);
          // and release local lock
          mOldPlayRegion.SetLocked( false );
       }
@@ -1660,7 +1662,7 @@ auto AdornedRulerPanel::QPHandle::Cancel
             mParent->mOldPlayRegion.GetStart(), mParent->mOldPlayRegion.GetEnd());
          if (mParent->mOldPlayRegion.Locked()) {
             // Restore Locked Play region
-            mParent->LockPlayRegion();
+            SelectUtilities::LockPlayRegion(*pProject);
             // and release local lock
             mParent->mOldPlayRegion.SetLocked( false );
          }
@@ -1706,8 +1708,10 @@ void AdornedRulerPanel::StartQPPlay(bool looped, bool cutPreview)
       // Looping a tiny selection may freeze, so just play it once.
       loopEnabled = ((end - start) > 0.001)? true : false;
 
-      auto options = DefaultPlayOptions( *mProject );
-      options.playLooped = (loopEnabled && looped);
+      bool looped = (loopEnabled && looped);
+      if (looped)
+         cutPreview = false;
+      auto options = DefaultPlayOptions( *mProject, looped );
 
       auto oldStart = playRegion.GetStart();
       if (!cutPreview)
@@ -1717,7 +1721,7 @@ void AdornedRulerPanel::StartQPPlay(bool looped, bool cutPreview)
 
       auto mode =
          cutPreview ? PlayMode::cutPreviewPlay
-         : options.playLooped ? PlayMode::loopedPlay
+         : looped ? PlayMode::loopedPlay
          : PlayMode::normalPlay;
 
       // Stop only after deciding where to start again, because an event
@@ -1862,7 +1866,10 @@ void AdornedRulerPanel::ShowMenu(const wxPoint & pos)
    rulerMenu.AppendCheckItem(OnTogglePinnedStateID, _("Pinned Play Head"))->
       Check(TracksPrefs::GetPinnedHeadPreference());
 
-   PopupMenu(&rulerMenu, pos);
+   BasicMenu::Handle{ &rulerMenu }.Popup(
+      wxWidgetsWindowPlacement{ this },
+      { pos.x, pos.y }
+   );
 }
 
 void AdornedRulerPanel::ShowScrubMenu(const wxPoint & pos)
@@ -1873,7 +1880,10 @@ void AdornedRulerPanel::ShowScrubMenu(const wxPoint & pos)
 
    wxMenu rulerMenu;
    scrubber.PopulatePopupMenu(rulerMenu);
-   PopupMenu(&rulerMenu, pos);
+   BasicMenu::Handle{ &rulerMenu }.Popup(
+      wxWidgetsWindowPlacement{ this },
+      { pos.x, pos.y }
+   );
 }
 
 void AdornedRulerPanel::OnToggleQuickPlay(wxCommandEvent&)
@@ -1941,9 +1951,9 @@ void AdornedRulerPanel::OnLockPlayRegion(wxCommandEvent&)
    const auto &viewInfo = ViewInfo::Get( *GetProject() );
    const auto &playRegion = viewInfo.playRegion;
    if (playRegion.Locked())
-      UnlockPlayRegion();
+      SelectUtilities::UnlockPlayRegion(*mProject);
    else
-      LockPlayRegion();
+      SelectUtilities::LockPlayRegion(*mProject);
 }
 
 
@@ -1961,7 +1971,7 @@ void AdornedRulerPanel::DoDrawPlayRegion(wxDC * dc)
       const int x2 = Time2Pos(end)-2;
       int y = mInner.y - TopMargin + mInner.height/2;
 
-      bool isLocked = playRegion.Locked();
+      bool isLocked = mLastPlayRegionLocked = playRegion.Locked();
       AColor::PlayRegionColor(dc, isLocked);
 
       wxPoint tri[3];
@@ -2346,33 +2356,6 @@ void AdornedRulerPanel::CreateOverlays()
          pCellularPanel->AddOverlay( mOverlay );
       this->AddOverlay( mOverlay->mPartner );
    }
-}
-
-void AdornedRulerPanel::LockPlayRegion()
-{
-   auto &project = *mProject;
-   auto &tracks = TrackList::Get( project );
-
-   auto &viewInfo = ViewInfo::Get( project );
-   auto &playRegion = viewInfo.playRegion;
-   if (playRegion.GetStart() >= tracks.GetEndTime()) {
-      AudacityMessageBox(
-         XO("Cannot lock region beyond\nend of project."),
-         XO("Error"));
-   }
-   else {
-      playRegion.SetLocked( true );
-      Refresh(false);
-   }
-}
-
-void AdornedRulerPanel::UnlockPlayRegion()
-{
-   auto &project = *mProject;
-   auto &viewInfo = ViewInfo::Get( project );
-   auto &playRegion = viewInfo.playRegion;
-   playRegion.SetLocked( false );
-   Refresh(false);
 }
 
 void AdornedRulerPanel::TogglePinnedHead()

@@ -22,6 +22,7 @@ Paul Licameli split from TrackPanel.cpp
 #include "../../ProjectWindows.h"
 #include "../../ProjectSettings.h"
 #include "ProjectStatus.h"
+#include "../../ScrubState.h"
 #include "../../Track.h"
 #include "ViewInfo.h"
 #include "../../WaveTrack.h"
@@ -344,6 +345,16 @@ void Scrubber::MarkScrubStart(
    mCancelled = false;
 }
 
+static AudioIOStartStreamOptions::PolicyFactory
+ScrubbingPlaybackPolicyFactory(const ScrubbingOptions &options)
+{
+   return [options]() -> std::unique_ptr<PlaybackPolicy>
+   {
+      return std::make_unique<ScrubbingPlaybackPolicy>(options);
+   };
+}
+
+
 #ifdef EXPERIMENTAL_SCRUBBING_SUPPORT
 // Assume xx is relative to the left edge of TrackPanel!
 bool Scrubber::MaybeStartScrubbing(wxCoord xx)
@@ -409,7 +420,7 @@ bool Scrubber::MaybeStartScrubbing(wxCoord xx)
                return ScrubPollInterval_ms;
             };
 #endif
-            options.pScrubbingOptions = &mOptions;
+            options.playNonWaveTracks = false;
             options.envelope = nullptr;
             mOptions.delay = (ScrubPollInterval_ms / 1000.0);
             mOptions.isPlayingAtSpeed = false;
@@ -460,6 +471,7 @@ bool Scrubber::MaybeStartScrubbing(wxCoord xx)
                   StopPolling();
             });
 
+            options.policyFactory = ScrubbingPlaybackPolicyFactory(mOptions);
             mScrubToken =
                projectAudioManager.PlayPlayRegion(
                   SelectedRegion(time0, time1), options,
@@ -525,7 +537,7 @@ bool Scrubber::StartSpeedPlay(double speed, double time0, double time1)
             };
 #endif
 
-   options.pScrubbingOptions = &mOptions;
+   options.playNonWaveTracks = false;
    options.envelope = nullptr;
    mOptions.delay = (ScrubPollInterval_ms / 1000.0);
    mOptions.initSpeed = speed;
@@ -562,6 +574,7 @@ bool Scrubber::StartSpeedPlay(double speed, double time0, double time1)
    mScrubSpeedDisplayCountdown = 0;
    // Aim to stop within 20 samples of correct position.
    double stopTolerance = 20.0 / options.rate;
+   options.policyFactory = ScrubbingPlaybackPolicyFactory(mOptions);
    mScrubToken =
       // Reduce time by 'stopTolerance' fudge factor, so that the Play will stop.
       projectAudioManager.PlayPlayRegion(
@@ -600,7 +613,7 @@ bool Scrubber::StartKeyboardScrubbing(double time0, bool backwards)
    };
 #endif
 
-   options.pScrubbingOptions = &mOptions;
+   options.playNonWaveTracks = false;
    options.envelope = nullptr;
 
    // delay and minStutterTime are used in AudioIO::AllocateBuffers() for setting the
@@ -628,6 +641,7 @@ bool Scrubber::StartKeyboardScrubbing(double time0, bool backwards)
          StopPolling();
    });
 
+   options.policyFactory = ScrubbingPlaybackPolicyFactory(mOptions);
    mScrubToken =
       ProjectAudioManager::Get(*mProject).PlayPlayRegion(
          SelectedRegion(time0, backwards ? mOptions.minTime : mOptions.maxTime),
@@ -671,7 +685,7 @@ void Scrubber::ContinueScrubbingPoll()
       mOptions.maxSpeed = mMaxSpeed;
       mOptions.adjustStart = false;
       mOptions.bySpeed = true;
-      gAudioIO->UpdateScrub(0, mOptions);
+      ScrubState::UpdateScrub(0, mOptions);
    }
    else if (mSpeedPlaying) {
       // default speed of 1.3 set, so that we can hear there is a problem
@@ -683,7 +697,7 @@ void Scrubber::ContinueScrubbingPoll()
       mOptions.maxSpeed = speed +0.01;
       mOptions.adjustStart = false;
       mOptions.bySpeed = true;
-      gAudioIO->UpdateScrub(speed, mOptions);
+      ScrubState::UpdateScrub(speed, mOptions);
    }
    else if (mKeyboardScrubbing) {
       mOptions.minSpeed = ScrubbingOptions::MinAllowedScrubSpeed();
@@ -693,7 +707,7 @@ void Scrubber::ContinueScrubbingPoll()
       double speed = GetKeyboardScrubbingSpeed();
       if (mBackwards)
          speed *= -1.0;
-      gAudioIO->UpdateScrub(speed, mOptions);
+      ScrubState::UpdateScrub(speed, mOptions);
    } else {
       const wxMouseState state(::wxGetMouseState());
       auto &trackPanel = GetProjectPanel( *mProject );
@@ -701,7 +715,7 @@ void Scrubber::ContinueScrubbingPoll()
       auto &viewInfo = ViewInfo::Get( *mProject );
 #ifdef DRAG_SCRUB
       if (mDragging && mSmoothScrollingScrub) {
-         const auto lastTime = gAudioIO->GetLastScrubTime();
+         const auto lastTime = ScrubState::GetLastScrubTime();
          const auto delta = mLastScrubPosition - position.x;
          const double time = viewInfo.OffsetTimeByPixels(lastTime, delta);
          mOptions.minSpeed = 0.0;
@@ -737,11 +751,11 @@ void Scrubber::ContinueScrubbingPoll()
          if (mSmoothScrollingScrub) {
             const double speed = FindScrubSpeed(seek, time);
             mOptions.bySpeed = true;
-            gAudioIO->UpdateScrub(speed, mOptions);
+            ScrubState::UpdateScrub(speed, mOptions);
          }
          else {
             mOptions.bySpeed = false;
-            gAudioIO->UpdateScrub(time, mOptions);
+            ScrubState::UpdateScrub(time, mOptions);
          }
       }
    }
@@ -827,7 +841,7 @@ void Scrubber::StopPolling()
 void Scrubber::StopScrubbing()
 {
    auto gAudioIO = AudioIO::Get();
-   gAudioIO->StopScrub();
+   ScrubState::StopScrub();
    StopPolling();
 
    if (HasMark() && !mCancelled) {

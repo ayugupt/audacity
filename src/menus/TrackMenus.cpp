@@ -335,6 +335,15 @@ void DoAlign
 
 #ifdef EXPERIMENTAL_SCOREALIGN
 
+#ifdef USE_MIDI
+static const ReservedCommandFlag&
+   NoteTracksSelectedFlag() { static ReservedCommandFlag flag{
+      [](const AudacityProject &project){
+         return !TrackList::Get( project ).Selected<const NoteTrack>().empty();
+      }
+   }; return flag; }  //gsw
+#endif
+
 // rough relative amount of time to compute one
 //    frame of audio or midi, or one cell of matrix, or one iteration
 //    of smoothing, measured on a 1.9GHz Core 2 Duo in 32-bit mode
@@ -498,9 +507,9 @@ void DoSortTracks( AudacityProject &project, int flags )
             int ndx;
             for (ndx = 0; ndx < w->GetNumClips(); ndx++) {
                const auto c = w->GetClipByIndex(ndx);
-               if (c->GetNumSamples() == 0)
+               if (c->GetPlaySamplesCount() == 0)
                   continue;
-               stime = std::min(stime, c->GetStartTime());
+               stime = std::min(stime, c->GetPlayStartTime());
             }
             return stime;
          },

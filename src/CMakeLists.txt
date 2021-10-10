@@ -105,6 +105,8 @@ list( APPEND SOURCES
       AudacityHeaders.h
       AudioIO.cpp
       AudioIO.h
+      AudioIOExt.cpp
+      AudioIOExt.h
       AudioIOListener.h
       AutoRecoveryDialog.cpp
       AutoRecoveryDialog.h
@@ -118,6 +120,7 @@ list( APPEND SOURCES
       Benchmark.h
       CellularPanel.cpp
       CellularPanel.h
+      ClassicThemeAsCeeCode.cpp
       ClassicThemeAsCeeCode.h
       Clipboard.cpp
       Clipboard.h
@@ -125,6 +128,7 @@ list( APPEND SOURCES
       CommonCommandFlags.h
       CrashReport.cpp
       CrashReport.h
+      DarkThemeAsCeeCode.cpp
       DarkThemeAsCeeCode.h
       DBConnection.cpp
       DBConnection.h
@@ -142,6 +146,7 @@ list( APPEND SOURCES
       FreqWindow.h
       HelpText.cpp
       HelpText.h
+      HiContrastThemeAsCeeCode.cpp
       HiContrastThemeAsCeeCode.h
       HistoryWindow.cpp
       HistoryWindow.h
@@ -168,6 +173,7 @@ list( APPEND SOURCES
       LangChoice.h
       Legacy.cpp
       Legacy.h
+      LightThemeAsCeeCode.cpp
       LightThemeAsCeeCode.h
       LogWindow.cpp
       LogWindow.h
@@ -178,6 +184,8 @@ list( APPEND SOURCES
       MacroMagic.h
       Menus.cpp
       Menus.h
+      MIDIPlay.cpp
+      MIDIPlay.h
       Mix.cpp
       Mix.h
       MixerBoard.cpp
@@ -231,6 +239,8 @@ list( APPEND SOURCES
       SampleBlock.h
       Screenshot.cpp
       Screenshot.h
+      ScrubState.cpp
+      ScrubState.h
       SelectUtilities.cpp
       SelectUtilities.h
       SelectFile.cpp
@@ -267,7 +277,6 @@ list( APPEND SOURCES
       Tags.h
       Theme.cpp
       Theme.h
-      ThemeAsCeeCode.h
       TimeDialog.cpp
       TimeDialog.h
       TimeTrack.cpp
@@ -794,6 +803,8 @@ list( APPEND SOURCES
       tracks/playabletrack/wavetrack/ui/SpectrumVZoomHandle.h
       tracks/playabletrack/wavetrack/ui/SpectrumView.cpp
       tracks/playabletrack/wavetrack/ui/SpectrumView.h
+      tracks/playabletrack/wavetrack/ui/WaveClipTrimHandle.h
+      tracks/playabletrack/wavetrack/ui/WaveClipTrimHandle.cpp
       tracks/playabletrack/wavetrack/ui/WaveTrackAffordanceControls.cpp
       tracks/playabletrack/wavetrack/ui/WaveTrackAffordanceControls.h
       tracks/playabletrack/wavetrack/ui/WaveTrackControls.cpp
@@ -889,6 +900,8 @@ list( APPEND SOURCES
       widgets/AudacityTextEntryDialog.h
       widgets/BackedPanel.cpp
       widgets/BackedPanel.h
+      widgets/BasicMenu.cpp
+      widgets/BasicMenu.h
       widgets/ErrorDialog.cpp
       widgets/ErrorDialog.h
       widgets/ExpandingToolBar.cpp
@@ -959,6 +972,8 @@ list( APPEND SOURCES
       widgets/wxTextCtrlWrapper.h
       widgets/wxWidgetsBasicUI.cpp
       widgets/wxWidgetsBasicUI.h
+      widgets/wxWidgetsWindowPlacement.cpp
+      widgets/wxWidgetsWindowPlacement.h
 
       # Update version
       $<$<BOOL:${${_OPT}has_updates_check}>:
@@ -975,6 +990,8 @@ list( APPEND SOURCES
           update/UpdatePopupDialog.cpp
           prefs/ApplicationPrefs.h
           prefs/ApplicationPrefs.cpp
+          update/NoUpdatesAvailableDialog.h
+          update/NoUpdatesAvailableDialog.cpp
       >
 
       Experimental.cmake
@@ -1063,7 +1080,6 @@ list( APPEND LIBRARIES
       PortAudio::PortAudio
       sqlite
       $<$<BOOL:${${_OPT}has_crashreports}>:crashreports>
-      $<$<BOOL:${USE_FFMPEG}>:ffmpeg>
       $<$<BOOL:${USE_LIBID3TAG}>:libid3tag::libid3tag>
       $<$<BOOL:${USE_LIBFLAC}>:FLAC::FLAC>
       $<$<BOOL:${USE_LIBFLAC}>:FLAC::FLAC++>
@@ -1286,10 +1302,17 @@ else()
                           -P ${AUDACITY_MODULE_PATH}/CopyLibs.cmake
       POST_BUILD
    )
+   
+   add_executable(findlib ../linux/findlib.c)
+   target_link_libraries(findlib ${CMAKE_DL_LIBS})
 endif()
 
 if(CRASH_REPORT_URL)
     list(APPEND DEFINES PRIVATE -DCRASH_REPORT_URL="${CRASH_REPORT_URL}")
+endif()
+
+if(SHOW_WHATS_NEW_SECTION)
+   list(APPEND DEFINES PRIVATE HAS_WHATS_NEW )
 endif()
 
 set_target_property_all( ${TARGET} RUNTIME_OUTPUT_NAME ${AUDACITY_NAME} )

@@ -17,6 +17,7 @@
 #include "../ProjectWindows.h"
 #include "../ProjectWindow.h"
 #include "../ProjectManager.h"
+#include "../SelectUtilities.h"
 #include "../SoundActivatedRecord.h"
 #include "../TimerRecordDialog.h"
 #include "../TrackPanelAx.h"
@@ -296,6 +297,12 @@ void DoMoveToLabel(AudacityProject &project, bool next)
             window.ScrollIntoView(selectedRegion.t0());
             window.RedrawProject();
          }
+         /* i18n-hint:
+            String is replaced by the name of a label,
+            first number gives the position of that label in a sequence
+            of labels,
+            and the last number is the total number of labels in the sequence.
+         */
          auto message = XO("%s %d of %d")
             .Format( label->title, i + 1, lt->GetNumLabels() );
          trackFocus.MessageForScreenReader(message);
@@ -576,7 +583,7 @@ void OnPunchAndRoll(const CommandContext &context)
          // May adjust t1 left
          // Let's ignore the possibility of a clip even shorter than the
          // crossfade duration!
-         newt1 = std::min(newt1, clip->GetEndTime() - crossFadeDuration);
+         newt1 = std::min(newt1, clip->GetPlayEndTime() - crossFadeDuration);
       }
    }
 
@@ -647,12 +654,12 @@ void OnPunchAndRoll(const CommandContext &context)
 
 void OnLockPlayRegion(const CommandContext &context)
 {
-   AdornedRulerPanel::Get( context.project ).LockPlayRegion();
+   SelectUtilities::LockPlayRegion(context.project);
 }
 
 void OnUnlockPlayRegion(const CommandContext &context)
 {
-   AdornedRulerPanel::Get( context.project ).UnlockPlayRegion();
+   SelectUtilities::UnlockPlayRegion(context.project);
 }
 
 void OnRescanDevices(const CommandContext &WXUNUSED(context) )
