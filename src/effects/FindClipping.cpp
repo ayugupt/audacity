@@ -80,7 +80,7 @@ EffectType EffectFindClipping::GetType()
    return EffectTypeAnalyze;
 }
 
-// EffectClientInterface implementation
+// EffectProcessor implementation
 bool EffectFindClipping::DefineParams( ShuttleParams & S ){
    S.SHUTTLE_PARAM( mStart, Start );
    S.SHUTTLE_PARAM( mStop, Stop );
@@ -111,7 +111,7 @@ bool EffectFindClipping::SetAutomationParameters(CommandParameters & parms)
 bool EffectFindClipping::Process()
 {
    std::shared_ptr<AddedAnalysisTrack> addedTrack;
-   Optional<ModifiedAnalysisTrack> modifiedTrack;
+   std::optional<ModifiedAnalysisTrack> modifiedTrack;
    const wxString name{ _("Clipping") };
 
    auto clt = *inputTracks()->Any< const LabelTrack >().find_if(

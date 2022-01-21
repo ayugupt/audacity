@@ -13,8 +13,8 @@ Paul Licameli split from TrackInfo.cpp
 
 
 #include "PlayableTrackButtonHandles.h"
-#include "../../../AColor.h"
-#include "../../../Track.h"
+#include "AColor.h"
+#include "Track.h"
 #include "../../../TrackInfo.h"
 #include "../../../TrackPanelDrawingContext.h"
 #include "ViewInfo.h"

@@ -12,6 +12,9 @@ Paul Licameli split from AudacityProject.cpp
 
 #include <atomic>
 #include <sqlite3.h>
+#include <optional>
+#include <cstring>
+
 #include <wx/app.h>
 #include <wx/crt.h>
 #include <wx/frame.h>
@@ -26,6 +29,7 @@ Paul Licameli split from AudacityProject.cpp
 #include "ProjectWindows.h"
 #include "SampleBlock.h"
 #include "TempDirectory.h"
+#include "TransactionScope.h"
 #include "WaveTrack.h"
 #include "widgets/AudacityMessageBox.h"
 #include "BasicUI.h"
@@ -33,7 +37,12 @@ Paul Licameli split from AudacityProject.cpp
 #include "wxFileNameWrapper.h"
 #include "XMLFileReader.h"
 #include "SentryHelper.h"
-#include "MemoryX.h"`
+#include "MemoryX.h"
+
+#include "ProjectFormatExtensionsRegistry.h"
+
+#include "BufferedStreamReader.h"
+#include "FromChars.h"
 
 // Don't change this unless the file format changes
 // in an irrevocable way
@@ -73,7 +82,8 @@ static const int ProjectFileID = PACK('A', 'U', 'D', 'Y');
 // Note that this is NOT the "schema_version" that SQLite maintains. The value
 // specified here is stored in the "user_version" field of the SQLite database
 // header.
-static const int ProjectFileVersion = PACK(3, 0, 0, 0);
+// DV: ProjectFileVersion is now evaluated at runtime
+// static const int ProjectFileVersion = PACK(3, 0, 0, 0);
 
 // Navigation:
 //
@@ -89,7 +99,7 @@ static const char *ProjectFileSchema =
    // See the CMakeList.txt for the SQLite lib for more
    // settings.
    "PRAGMA <schema>.application_id = %d;"
-   "PRAGMA <schema>.user_version = %d;"
+   "PRAGMA <schema>.user_version = %u;"
    ""
    // project is a binary representation of an XML file.
    // it's in binary for speed.
@@ -207,6 +217,210 @@ public:
 
    int mRc;
 };
+
+class SQLiteBlobStream final
+{
+public:
+   static std::optional<SQLiteBlobStream> Open(
+      sqlite3* db, const char* schema, const char* table, const char* column,
+      int64_t rowID, bool readOnly) noexcept
+   {
+      if (db == nullptr)
+         return {};
+
+      sqlite3_blob* blob = nullptr;
+
+      const int rc = sqlite3_blob_open(
+         db, schema, table, column, rowID, readOnly ? 0 : 1, &blob);
+
+      if (rc != SQLITE_OK)
+         return {};
+
+      return std::make_optional<SQLiteBlobStream>(blob, readOnly);
+   }
+
+   SQLiteBlobStream(sqlite3_blob* blob, bool readOnly) noexcept
+       : mBlob(blob)
+       , mIsReadOnly(readOnly)
+   {
+      mBlobSize = sqlite3_blob_bytes(blob);
+   }
+
+   SQLiteBlobStream(SQLiteBlobStream&& rhs) noexcept
+   {
+      *this = std::move(rhs);
+   }
+
+   SQLiteBlobStream& operator = (SQLiteBlobStream&& rhs) noexcept
+   {
+      std::swap(mBlob, rhs.mBlob);
+      std::swap(mBlobSize, rhs.mBlobSize);
+      std::swap(mOffset, rhs.mOffset);
+      std::swap(mIsReadOnly, rhs.mIsReadOnly);
+
+      return *this;
+   }
+
+   ~SQLiteBlobStream() noexcept
+   {
+      // Destructor should not throw and there is no
+      // way to handle the error otherwise
+      (void) Close();
+   }
+
+   bool IsOpen() const noexcept
+   {
+      return mBlob != nullptr;
+   }
+
+   int Close() noexcept
+   {
+      if (mBlob == nullptr)
+         return SQLITE_OK;
+
+      const int rc = sqlite3_blob_close(mBlob);
+
+      mBlob = nullptr;
+
+      return rc;
+   }
+
+   int Write(const void* ptr, int size) noexcept
+   {
+      // Stream APIs usually return the number of bytes written.
+      // sqlite3_blob_write is all-or-nothing function,
+      // so Write will return the result of the call
+      if (!IsOpen() || mIsReadOnly || ptr == nullptr)
+         return SQLITE_MISUSE;
+
+      const int rc = sqlite3_blob_write(mBlob, ptr, size, mOffset);
+
+      if (rc == SQLITE_OK)
+         mOffset += size;
+
+      return rc;
+   }
+
+   int Read(void* ptr, int& size) noexcept
+   {
+      if (!IsOpen() || ptr == nullptr)
+         return SQLITE_MISUSE;
+
+      const int availableBytes = mBlobSize - mOffset;
+
+      if (availableBytes == 0)
+      {
+         size = 0;
+         return SQLITE_OK;
+      }
+      else if (availableBytes < size)
+      {
+         size = availableBytes;
+      }
+
+      const int rc = sqlite3_blob_read(mBlob, ptr, size, mOffset);
+
+      if (rc == SQLITE_OK)
+         mOffset += size;
+
+      return rc;
+   }
+
+   bool IsEof() const noexcept
+   {
+      return mOffset == mBlobSize;
+   }
+
+private:
+   sqlite3_blob* mBlob { nullptr };
+   size_t mBlobSize { 0 };
+
+   int mOffset { 0 };
+
+   bool mIsReadOnly { false };
+};
+
+class BufferedProjectBlobStream : public BufferedStreamReader
+{
+public:
+   static constexpr std::array<const char*, 2> Columns = { "dict", "doc" };
+
+   BufferedProjectBlobStream(
+      sqlite3* db, const char* schema, const char* table,
+      int64_t rowID)
+       // Despite we use 64k pages in SQLite - it is impossible to guarantee
+       // that read is satisfied from a single page.
+       // Reading 64k proved to be slower, (64k - 8) gives no measurable difference
+       // to reading 32k.
+       // Reading 4k is slower than reading 32k.
+       : BufferedStreamReader(32 * 1024) 
+       , mDB(db)
+       , mSchema(schema)
+       , mTable(table)
+       , mRowID(rowID)
+   {
+   }
+
+private:
+   bool OpenBlob(size_t index)
+   {
+      if (index >= Columns.size())
+      {
+         mBlobStream.reset();
+         return false;
+      }
+
+      mBlobStream = SQLiteBlobStream::Open(
+         mDB, mSchema, mTable, Columns[index], mRowID, true);
+
+      return mBlobStream.has_value();
+   }
+
+   std::optional<SQLiteBlobStream> mBlobStream;
+   size_t mNextBlobIndex { 0 };
+
+   sqlite3* mDB;
+   const char* mSchema;
+   const char* mTable;
+   const int64_t mRowID;
+
+protected:
+   bool HasMoreData() const override
+   {
+      return mBlobStream.has_value() || mNextBlobIndex < Columns.size();
+   }
+
+   size_t ReadData(void* buffer, size_t maxBytes) override
+   {
+      if (!mBlobStream || mBlobStream->IsEof())
+      {
+         if (!OpenBlob(mNextBlobIndex++))
+            return {};
+      }
+
+      // Do not allow reading more then 2GB at a time (O_o)
+      maxBytes = std::min<size_t>(maxBytes, std::numeric_limits<int>::max());
+      auto bytesRead = static_cast<int>(maxBytes);
+
+      if (SQLITE_OK != mBlobStream->Read(buffer, bytesRead))
+      {
+         // Reading has failed, close the stream and do not allow opening
+         // the next one
+         mBlobStream = {};
+         mNextBlobIndex = Columns.size();
+
+         return 0;
+      }
+      else if (bytesRead == 0)
+      {
+         mBlobStream = {};
+      }
+
+      return static_cast<size_t>(bytesRead);
+   }
+};
+
+constexpr std::array<const char*, 2> BufferedProjectBlobStream::Columns;
 
 bool ProjectFileIO::InitializeSQL()
 {
@@ -518,7 +732,7 @@ static int ExecCallback(void *data, int cols, char **vals, char **names)
    );
 }
 
-int ProjectFileIO::Exec(const char *query, const ExecCB &callback)
+int ProjectFileIO::Exec(const char *query, const ExecCB &callback, bool silent)
 {
    char *errmsg = nullptr;
 
@@ -526,7 +740,7 @@ int ProjectFileIO::Exec(const char *query, const ExecCB &callback)
    int rc = sqlite3_exec(DB(), query, ExecCallback,
                          const_cast<void*>(ptr), &errmsg);
 
-   if (rc != SQLITE_ABORT && errmsg)
+   if (rc != SQLITE_ABORT && errmsg && !silent)
    {
       ADD_EXCEPTION_CONTEXT("sqlite3.query", query);
       ADD_EXCEPTION_CONTEXT("sqlite3.rc", std::to_string(rc));
@@ -545,9 +759,9 @@ int ProjectFileIO::Exec(const char *query, const ExecCB &callback)
    return rc;
 }
 
-bool ProjectFileIO::Query(const char *sql, const ExecCB &callback)
+bool ProjectFileIO::Query(const char *sql, const ExecCB &callback, bool silent)
 {
-   int rc = Exec(sql, callback);
+   int rc = Exec(sql, callback, silent);
    // SQLITE_ABORT is a non-error return only meaning the callback
    // stopped the iteration of rows early
    if ( !(rc == SQLITE_OK || rc == SQLITE_ABORT) )
@@ -558,7 +772,7 @@ bool ProjectFileIO::Query(const char *sql, const ExecCB &callback)
    return true;
 }
 
-bool ProjectFileIO::GetValue(const char *sql, wxString &result)
+bool ProjectFileIO::GetValue(const char *sql, wxString &result, bool silent)
 {
    // Retrieve the first column in the first row, if any
    result.clear();
@@ -569,65 +783,29 @@ bool ProjectFileIO::GetValue(const char *sql, wxString &result)
       return 1;
    };
 
-   return Query(sql, cb);
+   return Query(sql, cb, silent);
 }
 
-bool ProjectFileIO::GetBlob(const char *sql, wxMemoryBuffer &buffer)
+bool ProjectFileIO::GetValue(const char *sql, int64_t &value, bool silent)
 {
-   auto db = DB();
-   int rc;
-
-   buffer.Clear();
-
-   sqlite3_stmt *stmt = nullptr;
-   auto cleanup = finally([&]
+   bool success = false;
+   auto cb = [&value, &success](int cols, char** vals, char**)
    {
-      if (stmt)
+      if (cols > 0)
       {
-         sqlite3_finalize(stmt);
+         const std::string_view valueString = vals[0];
+
+         success = std::errc() ==
+            FromChars(
+               valueString.data(), valueString.data() + valueString.length(),
+               value)
+               .ec;
       }
-   });
+      // Stop after one row
+      return 1;
+   };
 
-   rc = sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr);
-   if (rc != SQLITE_OK)
-   {
-      ADD_EXCEPTION_CONTEXT("sqlite3.query", sql);
-      ADD_EXCEPTION_CONTEXT("sqlite3.rc", std::to_string(rc));
-      ADD_EXCEPTION_CONTEXT("sqlite3.context", "ProjectGileIO::GetBlob::prepare");
-
-      SetDBError(
-         XO("Unable to prepare project file command:\n\n%s").Format(sql)
-      );
-      return false;
-   }
-
-   rc = sqlite3_step(stmt);
-
-   // A row wasn't found...not an error
-   if (rc == SQLITE_DONE)
-   {
-      return true;
-   }
-
-   if (rc != SQLITE_ROW)
-   {
-      ADD_EXCEPTION_CONTEXT("sqlite3.query", sql);
-      ADD_EXCEPTION_CONTEXT("sqlite3.rc", std::to_string(rc));
-      ADD_EXCEPTION_CONTEXT("sqlite3.context", "ProjectGileIO::GetBlob::step");
-
-      SetDBError(
-         XO("Failed to retrieve data from the project file.\nThe following command failed:\n\n%s").Format(sql)
-      );
-      // AUD TODO handle error
-      return false;
-   }
-
-   const void *blob = sqlite3_column_blob(stmt, 0);
-   int size = sqlite3_column_bytes(stmt, 0);
-
-   buffer.AppendData(blob, size);
-
-   return true;
+   return Query(sql, cb, silent) && success;
 }
 
 bool ProjectFileIO::CheckVersion()
@@ -679,11 +857,12 @@ bool ProjectFileIO::CheckVersion()
       return false;
    }
 
-   long version = wxStrtol<char **>(result, nullptr, 10);
+   const ProjectFormatVersion version =
+      ProjectFormatVersion::FromPacked(wxStrtoul<char**>(result, nullptr, 10));
 
    // Project file version is higher than ours. We will refuse to
    // process it since we can't trust anything about it.
-   if (version > ProjectFileVersion)
+   if (SupportedProjectFormatVersion < version)
    {
       SetError(
          XO("This project was created with a newer version of Audacity.\n\nYou will need to upgrade to open it.")
@@ -691,13 +870,6 @@ bool ProjectFileIO::CheckVersion()
       return false;
    }
    
-   // Project file is older than ours, ask the user if it's okay to
-   // upgrade.
-   if (version < ProjectFileVersion)
-   {
-      return UpgradeSchema();
-   }
-
    return true;
 }
 
@@ -706,7 +878,7 @@ bool ProjectFileIO::InstallSchema(sqlite3 *db, const char *schema /* = "main" */
    int rc;
 
    wxString sql;
-   sql.Printf(ProjectFileSchema, ProjectFileID, ProjectFileVersion);
+   sql.Printf(ProjectFileSchema, ProjectFileID, BaseProjectFormatVersion.GetPacked());
    sql.Replace("<schema>", schema);
 
    rc = sqlite3_exec(db, sql, nullptr, nullptr, nullptr);
@@ -718,12 +890,6 @@ bool ProjectFileIO::InstallSchema(sqlite3 *db, const char *schema /* = "main" */
       return false;
    }
 
-   return true;
-}
-
-bool ProjectFileIO::UpgradeSchema()
-{
-   // To do
    return true;
 }
 
@@ -1195,7 +1361,8 @@ bool ProjectFileIO::RenameOrWarn(const FilePath &src, const FilePath &dst)
    // Wait for the checkpoints to end
    while (!done)
    {
-      wxMilliSleep(50);
+      using namespace std::chrono;
+      std::this_thread::sleep_for(50ms);
       pd->Pulse();
    }
    thread.join();
@@ -1532,7 +1699,7 @@ void ProjectFileIO::SetFileName(const FilePath &fileName)
    SetProjectTitle();
 }
 
-bool ProjectFileIO::HandleXMLTag(const wxChar *tag, const wxChar **attrs)
+bool ProjectFileIO::HandleXMLTag(const std::string_view& tag, const AttributesList &attrs)
 {
    auto &project = mProject;
 
@@ -1542,29 +1709,24 @@ bool ProjectFileIO::HandleXMLTag(const wxChar *tag, const wxChar **attrs)
 
    // loop through attrs, which is a null-terminated list of
    // attribute-value pairs
-   while (*attrs)
+   for (auto pair : attrs)
    {
-      const wxChar *attr = *attrs++;
-      const wxChar *value = *attrs++;
-
-      if (!value || !XMLValueChecker::IsGoodString(value))
-      {
-         break;
-      }
+      auto attr = pair.first;
+      auto value = pair.second;
 
       if ( ProjectFileIORegistry::Get()
           .CallAttributeHandler( attr, project, value ) )
          continue;
 
-      else if (!wxStrcmp(attr, wxT("version")))
+      else if (attr == "version")
       {
-         fileVersion = value;
+         fileVersion = value.ToWString();
          requiredTags++;
       }
 
-      else if (!wxStrcmp(attr, wxT("audacityversion")))
+      else if (attr == "audacityversion")
       {
-         audacityVersion = value;
+         audacityVersion = value.ToWString();
          requiredTags++;
       }
    } // while
@@ -1607,7 +1769,7 @@ bool ProjectFileIO::HandleXMLTag(const wxChar *tag, const wxChar **attrs)
       return false;
    }
 
-   if (wxStrcmp(tag, wxT("project")))
+   if (tag != "project")
    {
       return false;
    }
@@ -1616,7 +1778,7 @@ bool ProjectFileIO::HandleXMLTag(const wxChar *tag, const wxChar **attrs)
    return true;
 }
 
-XMLTagHandler *ProjectFileIO::HandleXMLChild(const wxChar *tag)
+XMLTagHandler *ProjectFileIO::HandleXMLChild(const std::string_view& tag)
 {
    auto &project = mProject;
    return ProjectFileIORegistry::Get().CallObjectAccessor(tag, project);
@@ -1659,7 +1821,8 @@ void ProjectFileIO::WriteXML(XMLWriter &xmlFile,
    xmlFile.WriteAttr(wxT("version"), wxT(AUDACITY_FILE_FORMAT_VERSION));
    xmlFile.WriteAttr(wxT("audacityversion"), AUDACITY_VERSION_STRING);
 
-   ProjectFileIORegistry::Get().CallWriters(proj, xmlFile);
+   ProjectFileIORegistry::Get().CallAttributeWriters(proj, xmlFile);
+   ProjectFileIORegistry::Get().CallObjectWriters(proj, xmlFile);
 
    tracklist.Any().Visit([&](const Track *t)
    {
@@ -1732,17 +1895,19 @@ bool ProjectFileIO::WriteDoc(const char *table,
                              const char *schema /* = "main" */)
 {
    auto db = DB();
+
+   TransactionScope transaction(mProject, "UpdateProject");
+
    int rc;
 
    // For now, we always use an ID of 1. This will replace the previously
    // written row every time.
    char sql[256];
-   sqlite3_snprintf(sizeof(sql),
-                    sql,
-                    "INSERT INTO %s.%s(id, dict, doc) VALUES(1, ?1, ?2)"
-                    "       ON CONFLICT(id) DO UPDATE SET dict = ?1, doc = ?2;",
-                    schema,
-                    table);
+   sqlite3_snprintf(
+      sizeof(sql), sql,
+      "INSERT INTO %s.%s(id, dict, doc) VALUES(1, ?1, ?2)"
+      "       ON CONFLICT(id) DO UPDATE SET dict = ?1, doc = ?2;",
+      schema, table);
 
    sqlite3_stmt *stmt = nullptr;
    auto cleanup = finally([&]
@@ -1766,43 +1931,134 @@ bool ProjectFileIO::WriteDoc(const char *table,
       return false;
    }
 
-   const wxMemoryBuffer &dict = autosave.GetDict();
-   const wxMemoryBuffer &data = autosave.GetData();
+   const MemoryStream& dict = autosave.GetDict();
+   const MemoryStream& data = autosave.GetData();
 
    // Bind statement parameters
    // Might return SQL_MISUSE which means it's our mistake that we violated
    // preconditions; should return SQL_OK which is 0
-   if (sqlite3_bind_blob(stmt, 1, dict.GetData(), dict.GetDataLen(), SQLITE_STATIC) ||
-       sqlite3_bind_blob(stmt, 2, data.GetData(), data.GetDataLen(), SQLITE_STATIC))
+   if (
+      sqlite3_bind_zeroblob(stmt, 1, dict.GetSize()) ||
+      sqlite3_bind_zeroblob(stmt, 2, data.GetSize()))
    {
       ADD_EXCEPTION_CONTEXT("sqlite3.query", sql);
       ADD_EXCEPTION_CONTEXT("sqlite3.rc", std::to_string(rc));
       ADD_EXCEPTION_CONTEXT("sqlite3.context", "ProjectGileIO::WriteDoc::bind");
 
-      SetDBError(
-         XO("Unable to bind to blob")
-      );
+      SetDBError(XO("Unable to bind to blob"));
       return false;
    }
 
+   const auto reportError = [this](auto sql) {
+      SetDBError(
+         XO("Failed to update the project file.\nThe following command failed:\n\n%s")
+            .Format(sql));
+   };
+
    rc = sqlite3_step(stmt);
+
    if (rc != SQLITE_DONE)
    {
       ADD_EXCEPTION_CONTEXT("sqlite3.query", sql);
       ADD_EXCEPTION_CONTEXT("sqlite3.rc", std::to_string(rc));
       ADD_EXCEPTION_CONTEXT("sqlite3.context", "ProjectGileIO::WriteDoc::step");
 
-      SetDBError(
-         XO("Failed to update the project file.\nThe following command failed:\n\n%s").Format(sql)
-      );
+      reportError(sql);
       return false;
    }
 
-   return true;
+   // Finalize the statement before commiting the transaction
+   sqlite3_finalize(stmt);
+   stmt = nullptr;
+
+   // Get rowid
+
+   int64_t rowID = 0;
+
+   const wxString rowIDSql =
+      wxString::Format("SELECT ROWID FROM %s.%s WHERE id = 1;", schema, table);
+
+   if (!GetValue(rowIDSql, rowID, true))
+   {
+      ADD_EXCEPTION_CONTEXT("sqlite3.rc", std::to_string(sqlite3_errcode(db)));
+      ADD_EXCEPTION_CONTEXT("sqlite3.context", "ProjectGileIO::WriteDoc::rowid");
+
+      reportError(rowIDSql);
+      return false;
+   }
+
+   const auto writeStream = [db, schema, table, rowID, this](const char* column, const MemoryStream& stream) {
+
+      auto blobStream =
+         SQLiteBlobStream::Open(db, schema, table, column, rowID, false);
+
+      if (!blobStream)
+      {
+         ADD_EXCEPTION_CONTEXT("sqlite3.rc", std::to_string(sqlite3_errcode(db)));
+         ADD_EXCEPTION_CONTEXT("sqlite3.col", column);
+         ADD_EXCEPTION_CONTEXT("sqlite3.context", "ProjectGileIO::WriteDoc::openBlobStream");
+
+         SetDBError(XO("Unable to bind to blob"));
+         return false;
+      }
+
+      for (auto chunk : stream)
+      {
+         if (SQLITE_OK != blobStream->Write(chunk.first, chunk.second))
+         {
+            ADD_EXCEPTION_CONTEXT("sqlite3.rc", std::to_string(sqlite3_errcode(db)));
+            ADD_EXCEPTION_CONTEXT("sqlite3.col", column);
+            ADD_EXCEPTION_CONTEXT("sqlite3.context", "ProjectGileIO::WriteDoc::writeBlobStream");
+            // The user visible message is not changed, so there is no need for new strings
+            SetDBError(XO("Unable to bind to blob"));
+            return false;
+         }
+      }
+
+      if (blobStream->Close() != SQLITE_OK)
+      {
+         ADD_EXCEPTION_CONTEXT(
+            "sqlite3.rc", std::to_string(sqlite3_errcode(db)));
+         ADD_EXCEPTION_CONTEXT("sqlite3.col", column);
+         ADD_EXCEPTION_CONTEXT(
+            "sqlite3.context", "ProjectGileIO::WriteDoc::writeBlobStream");
+         // The user visible message is not changed, so there is no need for new
+         // strings
+         SetDBError(XO("Unable to bind to blob"));
+         return false;
+      }
+
+      return true;
+   };
+
+   if (!writeStream("dict", dict))
+      return false;
+
+   if (!writeStream("doc", data))
+      return false;
+
+   const auto requiredVersion =
+      ProjectFormatExtensionsRegistry::Get().GetRequiredVersion(mProject);
+
+   const wxString setVersionSql =
+      wxString::Format("PRAGMA user_version = %u", requiredVersion.GetPacked());
+
+   if (!Query(setVersionSql.c_str(), [](auto...) { return 0; }))
+   {
+      // DV: Very unlikely case.
+      // Since we need to improve the error messages in the future, let's use
+      // the generic message for now, so no new strings are needed
+      reportError(setVersionSql);
+      return false;
+   }
+
+   return transaction.Commit();
 }
 
 bool ProjectFileIO::LoadProject(const FilePath &fileName, bool ignoreAutosave)
 {
+   auto now = std::chrono::high_resolution_clock::now();
+
    bool success = false;
 
    auto cleanup = finally([&]
@@ -1821,56 +2077,43 @@ bool ProjectFileIO::LoadProject(const FilePath &fileName, bool ignoreAutosave)
       return false;
    }
 
-   wxString project;
-   wxMemoryBuffer buffer;
-   bool usedAutosave = true;
+   int64_t rowId = -1;
 
-   // Get the autosave doc, if any
-   if (!ignoreAutosave &&
-       !GetBlob("SELECT dict || doc FROM autosave WHERE id = 1;", buffer))
-   {
-      // Error already set
-      return false;
-   }
- 
+   bool useAutosave =
+      !ignoreAutosave &&
+      GetValue("SELECT ROWID FROM main.autosave WHERE id = 1;", rowId, true);
+
+   int64_t rowsCount = 0;
    // If we didn't have an autosave doc, load the project doc instead
-   if (buffer.GetDataLen() == 0)
+   if (
+      !useAutosave &&
+      (!GetValue("SELECT COUNT(1) FROM main.project;", rowsCount, true) || rowsCount == 0))
    {
-      usedAutosave = false;
+      // Missing both the autosave and project docs. This can happen if the
+      // system were to crash before the first autosave into a temporary file.
+      // This should be a recoverable scenario.
+      mRecovered = true;
+      mModified = true;
 
-      if (!GetBlob("SELECT dict || doc FROM project WHERE id = 1;", buffer))
-      {
-         // Error already set
-         return false;
-      }
+      return true;
    }
 
-   // Missing both the autosave and project docs. This can happen if the
-   // system were to crash before the first autosave into a temporary file.
-   // This should be a recoverable scenario.
-   if (buffer.GetDataLen() == 0)
+   if (!useAutosave && !GetValue("SELECT ROWID FROM main.project WHERE id = 1;", rowId, false))
    {
-      mRecovered = true;
+      return false;
    }
    else
    {
-      project = ProjectSerializer::Decode(buffer);
-      if (project.empty())
-      {
-         SetError(XO("Unable to decode project document"));
-
-         return false;
-      }
-
-      XMLFileReader xmlFile;
-
       // Load 'er up
-      success = xmlFile.ParseString(this, project);
+      BufferedProjectBlobStream stream(
+         DB(), "main", useAutosave ? "autosave" : "project", rowId);
+
+      success = ProjectSerializer::Decode(stream, this);
+
       if (!success)
       {
          SetError(
-            XO("Unable to parse project information."),
-            xmlFile.GetErrorStr()
+            XO("Unable to parse project information.")
          );
          return false;
       }
@@ -1890,7 +2133,7 @@ bool ProjectFileIO::LoadProject(const FilePath &fileName, bool ignoreAutosave)
       }
    
       // Remember if we used autosave or not
-      if (usedAutosave)
+      if (useAutosave)
       {
          mRecovered = true;
       }
@@ -1919,6 +2162,12 @@ bool ProjectFileIO::LoadProject(const FilePath &fileName, bool ignoreAutosave)
    DiscardConnection();
 
    success = true;
+
+   auto duration = std::chrono::high_resolution_clock::now() - now;
+
+   wxLogInfo(
+      "Project loaded in %lld ms",
+      std::chrono::duration_cast<std::chrono::milliseconds>(duration).count());
 
    return true;
 }
@@ -2054,7 +2303,8 @@ bool ProjectFileIO::SaveProject(
          // Wait for the checkpoints to end
          while (!done)
          {
-            wxMilliSleep(50);
+            using namespace std::chrono;
+            std::this_thread::sleep_for(50ms);
             pd->Pulse();
          }
          thread.join();

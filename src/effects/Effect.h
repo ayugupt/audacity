@@ -26,15 +26,17 @@ class wxListBox;
 class wxWindow;
 
 #include "ConfigInterface.h"
-#include "EffectInterface.h"
+#include "EffectHostInterface.h" // to inherit
+#include "EffectInterface.h" // to inherit
 #include "PluginInterface.h"
 
 #include "SampleCount.h"
 #include "SelectedRegion.h"
 
-#include "../Track.h"
+#include "Track.h"
 
 #include "../widgets/wxPanelWrapper.h" // to inherit
+#include <wx/windowptr.h>
 
 class wxArrayString;
 class ShuttleGui;
@@ -42,16 +44,19 @@ class AudacityCommand;
 
 #define BUILTIN_EFFECT_PREFIX wxT("Built-in Effect: ")
 
+namespace BasicUI { class ProgressDialog; }
+
 class AudacityProject;
 class LabelTrack;
 class NotifyingSelectedRegion;
-class ProgressDialog;
 class SelectedRegion;
 class EffectUIHost;
 class Track;
 class TrackList;
 class WaveTrackFactory;
 class WaveTrack;
+
+using FloatBuffers = ArraysOf<float>;
 
 /* i18n-hint: "Nyquist" is an embedded interpreted programming language in
  Audacity, named in honor of the Swedish-American Harry Nyquist (or Nyqvist).
@@ -65,10 +70,10 @@ class WaveTrack;
 // TODO:  Much more cleanup of old methods and variables is needed, but
 // TODO:  can't be done until after all effects are using the NEW API.
 
+//! An Effect object is at once host and client:  it is self-hosting.
 class AUDACITY_DLL_API Effect /* not final */ : public wxEvtHandler,
-                                public EffectClientInterface,
-                                public EffectUIClientInterface,
-                                public EffectHostInterface
+   public EffectUIClientInterface,
+   public EffectUIHostInterface
 {
  //
  // public methods
@@ -81,11 +86,6 @@ class AUDACITY_DLL_API Effect /* not final */ : public wxEvtHandler,
    // Avoid allocating memory or doing time-consuming processing here.
    Effect();
    virtual ~Effect();
-
-   // Type of a registered function that, if it returns true,
-   // causes ShowInterface to return early without making any dialog
-   using VetoDialogHook = bool (*) ( wxDialog* );
-   static VetoDialogHook SetVetoDialogHook( VetoDialogHook hook );
 
    // ComponentInterface implementation
 
@@ -107,7 +107,17 @@ class AUDACITY_DLL_API Effect /* not final */ : public wxEvtHandler,
    bool SupportsRealtime() override;
    bool SupportsAutomation() override;
 
-   // EffectClientInterface implementation
+   bool GetAutomationParameters(CommandParameters & parms) override;
+   bool SetAutomationParameters(CommandParameters & parms) override;
+
+   bool LoadUserPreset(const RegistryPath & name) override;
+   bool SaveUserPreset(const RegistryPath & name) override;
+
+   RegistryPaths GetFactoryPresets() override;
+   bool LoadFactoryPreset(int id) override;
+   bool LoadFactoryDefaults() override;
+
+   // EffectProcessor implementation
 
    bool SetHost(EffectHostInterface *host) override;
    
@@ -124,7 +134,6 @@ class AUDACITY_DLL_API Effect /* not final */ : public wxEvtHandler,
    size_t SetBlockSize(size_t maxBlockSize) override;
    size_t GetBlockSize() const override;
 
-   bool IsReady() override;
    bool ProcessInitialize(sampleCount totalLen, ChannelNames chanMap = NULL) override;
    bool ProcessFinalize() override;
    size_t ProcessBlock(float **inBlock, float **outBlock, size_t blockLen) override;
@@ -141,22 +150,12 @@ class AUDACITY_DLL_API Effect /* not final */ : public wxEvtHandler,
                                        size_t numSamples) override;
    bool RealtimeProcessEnd() override;
 
-   bool ShowInterface( wxWindow &parent,
-      const EffectDialogFactory &factory, bool forceModal = false) override;
+   int ShowClientInterface(
+      wxWindow &parent, wxDialog &dialog, bool forceModal = false) override;
 
-   bool GetAutomationParameters(CommandParameters & parms) override;
-   bool SetAutomationParameters(CommandParameters & parms) override;
-
-   bool LoadUserPreset(const RegistryPath & name) override;
-   bool SaveUserPreset(const RegistryPath & name) override;
-
-   RegistryPaths GetFactoryPresets() override;
-   bool LoadFactoryPreset(int id) override;
-   bool LoadFactoryDefaults() override;
 
    // EffectUIClientInterface implementation
 
-   void SetHostUI(EffectUIHostInterface *host) override;
    bool PopulateUI(ShuttleGui &S) final;
    bool IsGraphicalUI() override;
    bool ValidateUI() override;
@@ -167,14 +166,12 @@ class AUDACITY_DLL_API Effect /* not final */ : public wxEvtHandler,
    void ExportPresets() override;
    void ImportPresets() override;
 
-   static CommandID GetSquashedName(wxString name);
-
    bool HasOptions() override;
    void ShowOptions() override;
 
    // EffectHostInterface implementation
 
-   double GetDefaultDuration() override;
+   EffectDefinitionInterface &GetDefinition() override;
    double GetDuration() override;
    NumericFormatSymbol GetDurationFormat() override;
    virtual NumericFormatSymbol GetSelectionFormat() /* not override? */; // time format in Selection toolbar
@@ -183,75 +180,31 @@ class AUDACITY_DLL_API Effect /* not final */ : public wxEvtHandler,
    RegistryPath GetUserPresetsGroup(const RegistryPath & name) override;
    RegistryPath GetCurrentSettingsGroup() override;
    RegistryPath GetFactoryDefaultsGroup() override;
+
    virtual wxString GetSavedStateGroup() /* not override? */;
 
-   // ConfigClientInterface implementation
+   // EffectUIHostInterface implementation
 
-   bool HasSharedConfigGroup(const RegistryPath & group) override;
-   bool GetSharedConfigSubgroups(const RegistryPath & group, RegistryPaths &subgroups) override;
-
-   bool GetSharedConfig(const RegistryPath & group, const RegistryPath & key, wxString & value, const wxString & defval = {}) override;
-   bool GetSharedConfig(const RegistryPath & group, const RegistryPath & key, int & value, int defval = 0) override;
-   bool GetSharedConfig(const RegistryPath & group, const RegistryPath & key, bool & value, bool defval = false) override;
-   bool GetSharedConfig(const RegistryPath & group, const RegistryPath & key, float & value, float defval = 0.0) override;
-   bool GetSharedConfig(const RegistryPath & group, const RegistryPath & key, double & value, double defval = 0.0) override;
-
-   bool SetSharedConfig(const RegistryPath & group, const RegistryPath & key, const wxString & value) override;
-   bool SetSharedConfig(const RegistryPath & group, const RegistryPath & key, const int & value) override;
-   bool SetSharedConfig(const RegistryPath & group, const RegistryPath & key, const bool & value) override;
-   bool SetSharedConfig(const RegistryPath & group, const RegistryPath & key, const float & value) override;
-   bool SetSharedConfig(const RegistryPath & group, const RegistryPath & key, const double & value) override;
-
-   bool RemoveSharedConfigSubgroup(const RegistryPath & group) override;
-   bool RemoveSharedConfig(const RegistryPath & group, const RegistryPath & key) override;
-
-   bool HasPrivateConfigGroup(const RegistryPath & group) override;
-   bool GetPrivateConfigSubgroups(const RegistryPath & group, RegistryPaths &paths) override;
-
-   bool GetPrivateConfig(const RegistryPath & group, const RegistryPath & key, wxString & value, const wxString & defval = {}) override;
-   bool GetPrivateConfig(const RegistryPath & group, const RegistryPath & key, int & value, int defval = 0) override;
-   bool GetPrivateConfig(const RegistryPath & group, const RegistryPath & key, bool & value, bool defval = false) override;
-   bool GetPrivateConfig(const RegistryPath & group, const RegistryPath & key, float & value, float defval = 0.0) override;
-   bool GetPrivateConfig(const RegistryPath & group, const RegistryPath & key, double & value, double defval = 0.0) override;
-
-   bool SetPrivateConfig(const RegistryPath & group, const RegistryPath & key, const wxString & value) override;
-   bool SetPrivateConfig(const RegistryPath & group, const RegistryPath & key, const int & value) override;
-   bool SetPrivateConfig(const RegistryPath & group, const RegistryPath & key, const bool & value) override;
-   bool SetPrivateConfig(const RegistryPath & group, const RegistryPath & key, const float & value) override;
-   bool SetPrivateConfig(const RegistryPath & group, const RegistryPath & key, const double & value) override;
-
-   bool RemovePrivateConfigSubgroup(const RegistryPath & group) override;
-   bool RemovePrivateConfig(const RegistryPath & group, const RegistryPath & key) override;
+   int ShowHostInterface( wxWindow &parent,
+      const EffectDialogFactory &factory, bool forceModal = false) override;
 
    // Effect implementation
 
-   // NEW virtuals
-   virtual PluginID GetID();
+   unsigned TestUIFlags(unsigned mask);
 
-   virtual bool Startup(EffectClientInterface *client);
-   virtual bool Startup();
-
-   virtual bool GetAutomationParameters(wxString & parms);
-   virtual bool SetAutomationParameters(const wxString & parms);
-
-   virtual RegistryPaths GetUserPresets();
-   virtual bool HasCurrentSettings();
-   virtual bool HasFactoryDefaults();
-
-   // Name of page in the Audacity alpha manual
-   virtual ManualPageID ManualPage();
-   // Fully qualified local help file name
-   virtual FilePath HelpPage();
-
-   virtual void SetUIFlags(unsigned flags);
-   virtual unsigned TestUIFlags(unsigned mask);
-   virtual bool IsBatchProcessing();
-   virtual void SetBatchProcessing(bool start);
-
-   /* not virtual */ void SetPresetParameters( const wxArrayString * Names, const wxArrayString * Values ) {
+   void SetPresetParameters( const wxArrayString * Names, const wxArrayString * Values ) {
       if( Names ) mPresetNames = *Names;
       if( Values ) mPresetValues = *Values;
    }
+
+   // NEW virtuals
+   virtual bool Startup(EffectUIClientInterface *client);
+
+   virtual bool GetAutomationParametersAsString(wxString & parms);
+   virtual bool SetAutomationParametersFromString(const wxString & parms);
+
+   virtual bool IsBatchProcessing();
+   virtual void SetBatchProcessing(bool start);
 
    // Returns true on success.  Will only operate on tracks that
    // have the "selected" flag set to true, which is consistent with
@@ -260,15 +213,13 @@ class AUDACITY_DLL_API Effect /* not final */ : public wxEvtHandler,
    /* not virtual */ bool DoEffect( double projectRate, TrackList *list,
       WaveTrackFactory *factory, NotifyingSelectedRegion &selectedRegion,
       // Prompt the user for input only if these arguments are both not null.
+      unsigned flags,
       wxWindow *pParent = nullptr,
       const EffectDialogFactory &dialogFactory = {} );
 
    bool Delegate( Effect &delegate,
       wxWindow &parent, const EffectDialogFactory &factory );
 
-   virtual bool IsHidden();
-
-   // Nonvirtual
    // Display a message box, using effect's (translated) name as the prefix
    // for the title.
    enum : long { DefaultMessageBoxStyle = wxOK | wxCENTRE };
@@ -277,6 +228,14 @@ class AUDACITY_DLL_API Effect /* not final */ : public wxEvtHandler,
                   const TranslatableString& titleStr = {});
 
    static void IncEffectCounter(){ nEffectsDone++;};
+
+ protected:
+   bool EnableApply(bool enable = true);
+   bool EnablePreview(bool enable = true);
+
+ public:
+   // NEW virtuals
+   virtual bool Startup();
 
 //
 // protected virtual methods
@@ -299,11 +258,14 @@ protected:
    virtual bool CheckWhetherSkipEffect() { return false; }
 
    // Actually do the effect here.
+   /*! If Process() is not overridden, it uses ProcessInitialize(),
+    ProcessBlock(), and ProcessFinalize() methods of EffectProcessor,
+    and also GetLatency() to determine how many leading output samples to
+    discard and how many extra samples to produce. */
    virtual bool Process();
    virtual bool ProcessPass();
    virtual bool InitPass1();
    virtual bool InitPass2();
-   virtual int GetPass();
 
    // clean up any temporary memory, needed only per invocation of the
    // effect, after either successful or failed or exception-aborted processing.
@@ -321,9 +283,6 @@ protected:
    virtual void PopulateOrExchange(ShuttleGui & S);
    virtual bool TransferDataToWindow() /* not override */;
    virtual bool TransferDataFromWindow() /* not override */;
-   virtual bool EnableApply(bool enable = true);
-   virtual bool EnablePreview(bool enable = true);
-   virtual void EnableDebug(bool enable = true);
 
    // No more virtuals!
 
@@ -453,12 +412,10 @@ protected:
 // may be needed by any particular subclass of Effect.
 //
 protected:
-
-   ProgressDialog *mProgress; // Temporary pointer, NOT deleted in destructor.
+   BasicUI::ProgressDialog *mProgress = nullptr; // Temporary pointer, NOT deleted in destructor.
    double         mProjectRate; // Sample rate of the project - NEW tracks should
                                // be created with this rate...
    double         mSampleRate;
-   wxWeakRef<NotifyingSelectedRegion> mpSelectedRegion{};
    WaveTrackFactory   *mFactory;
    const TrackList *inputTracks() const { return mTracks; }
    const AudacityProject *FindProject() const;
@@ -474,16 +431,20 @@ protected:
    int            mPass;
 
    // UI
-   wxDialog       *mUIDialog;
+   //! This smart pointer tracks the lifetime of the dialog
+   wxWeakRef<wxDialog> mHostUIDialog;
+   //! This weak pointer may be the same as the above, or null
+   wxWeakRef<wxDialog> mUIDialog;
    wxWindow       *mUIParent;
-   int            mUIResultID;
-   unsigned       mUIFlags;
+   unsigned       mUIFlags{ 0 };
 
    sampleCount    mSampleCnt;
 
  // Used only by the base Effect class
  //
  private:
+   double GetDefaultDuration();
+
    void CountWaveTracks();
 
    // Driver for client effects
@@ -516,8 +477,6 @@ private:
 
    bool mIsPreview;
 
-   bool mUIDebug;
-
    std::vector<Track*> mIMap;
    std::vector<Track*> mOMap;
 
@@ -525,7 +484,7 @@ private:
    int mNumGroups;
 
    // For client driver
-   EffectClientInterface *mClient;
+   EffectUIClientInterface *mClient;
    size_t mNumAudioIn;
    size_t mNumAudioOut;
 

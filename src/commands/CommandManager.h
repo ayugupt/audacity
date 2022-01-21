@@ -29,6 +29,7 @@
 
 #include <unordered_map>
 
+class wxEvent;
 class wxMenu;
 class wxMenuBar;
 using CommandParameter = CommandID;
@@ -356,9 +357,9 @@ private:
    // Loading/Saving
    //
 
-   bool HandleXMLTag(const wxChar *tag, const wxChar **attrs) override;
-   void HandleXMLEndTag(const wxChar *tag) override;
-   XMLTagHandler *HandleXMLChild(const wxChar *tag) override;
+   bool HandleXMLTag(const std::string_view& tag, const AttributesList &attrs) override;
+   void HandleXMLEndTag(const std::string_view& tag) override;
+   XMLTagHandler *HandleXMLChild(const std::string_view& tag) override;
 
 private:
    // mMaxList only holds shortcuts that should not be added (by default)

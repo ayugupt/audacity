@@ -5,7 +5,7 @@
    ExportFFmpeg.cpp
 
    Audacity(R) is copyright (c) 1999-2009 Audacity Team.
-   License: GPL v2.  See License.txt.
+   License: GPL v2 or later.  See License.txt.
 
    LRN
 
@@ -35,11 +35,11 @@ function.
 #include <wx/spinctrl.h>
 #include <wx/combobox.h>
 
-#include "../Mix.h"
+#include "Mix.h"
 #include "ProjectRate.h"
 #include "ProjectSettings.h"
 #include "../Tags.h"
-#include "../Track.h"
+#include "Track.h"
 #include "../widgets/AudacityMessageBox.h"
 #include "../widgets/ProgressDialog.h"
 #include "wxFileNameWrapper.h"

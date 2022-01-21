@@ -43,7 +43,6 @@
 #include <algorithm>
 #include <wx/setup.h> // for wxUSE_* macros
 #include <wx/wxcrtvararg.h>
-#include <wx/app.h>
 #include <wx/defs.h>
 #include <wx/dialog.h>
 #include <wx/dcbuffer.h>
@@ -60,9 +59,9 @@
 #include <math.h>
 
 #include "../AudioIO.h"
-#include "../AColor.h"
+#include "AColor.h"
 #include "../widgets/BasicMenu.h"
-#include "../ImageManipulation.h"
+#include "ImageManipulation.h"
 #include "Decibels.h"
 #include "Project.h"
 #include "../ProjectAudioManager.h"
@@ -70,10 +69,10 @@
 #include "../ProjectWindows.h"
 #include "Prefs.h"
 #include "../ShuttleGui.h"
-#include "../Theme.h"
+#include "Theme.h"
 #include "../widgets/wxWidgetsWindowPlacement.h"
 
-#include "../AllThemeResources.h"
+#include "AllThemeResources.h"
 #include "../widgets/valnum.h"
 
 #if wxUSE_ACCESSIBILITY
@@ -348,14 +347,10 @@ MeterPanel::MeterPanel(AudacityProject *project,
    mPeakPeakPen = wxPen(theTheme.Colour( clrMeterPeak),        1, wxPENSTYLE_SOLID);
    mDisabledPen = wxPen(theTheme.Colour( clrMeterDisabledPen), 1, wxPENSTYLE_SOLID);
 
-   if (mIsInput) {
-      wxTheApp->Bind(EVT_AUDIOIO_MONITOR,
-                        &MeterPanel::OnAudioIOStatus,
-                        this);
-      wxTheApp->Bind(EVT_AUDIOIO_CAPTURE,
-                        &MeterPanel::OnAudioIOStatus,
-                        this);
+   mSubscription = AudioIO::Get()
+      ->Subscribe(*this, &MeterPanel::OnAudioIOStatus);
 
+   if (mIsInput) {
       mPen       = wxPen(   theTheme.Colour( clrMeterInputPen         ), 1, wxPENSTYLE_SOLID);
       mBrush     = wxBrush( theTheme.Colour( clrMeterInputBrush       ), wxBRUSHSTYLE_SOLID);
       mRMSBrush  = wxBrush( theTheme.Colour( clrMeterInputRMSBrush    ), wxBRUSHSTYLE_SOLID);
@@ -364,11 +359,6 @@ MeterPanel::MeterPanel(AudacityProject *project,
 //      mDarkPen   = wxPen(   theTheme.Colour( clrMeterInputDarkPen     ), 1, wxSOLID);
    }
    else {
-      // Register for AudioIO events
-      wxTheApp->Bind(EVT_AUDIOIO_PLAYBACK,
-                        &MeterPanel::OnAudioIOStatus,
-                        this);
-
       mPen       = wxPen(   theTheme.Colour( clrMeterOutputPen        ), 1, wxPENSTYLE_SOLID);
       mBrush     = wxBrush( theTheme.Colour( clrMeterOutputBrush      ), wxBRUSHSTYLE_SOLID);
       mRMSBrush  = wxBrush( theTheme.Colour( clrMeterOutputRMSBrush   ), wxBRUSHSTYLE_SOLID);
@@ -1912,16 +1902,16 @@ void MeterPanel::StopMonitoring(){
    } 
 }
 
-void MeterPanel::OnAudioIOStatus(wxCommandEvent &evt)
+void MeterPanel::OnAudioIOStatus(AudioIOEvent evt)
 {
-   evt.Skip();
-   AudacityProject *p = (AudacityProject *) evt.GetEventObject();
+   if (!mIsInput != (evt.type == AudioIOEvent::PLAYBACK))
+      return;
 
-   mActive = (evt.GetInt() != 0) && (p == mProject);
-
+   AudacityProject *p = evt.pProject;
+   mActive = evt.on && (p == mProject);
    if( mActive ){
       mTimer.Start(1000 / mMeterRefreshRate);
-      if (evt.GetEventType() == EVT_AUDIOIO_MONITOR)
+      if (evt.type == AudioIOEvent::MONITOR)
          mMonitoring = mActive;
    } else {
       mTimer.Stop();

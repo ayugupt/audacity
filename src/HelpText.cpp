@@ -15,8 +15,7 @@
 
 #include "HelpText.h"
 
-
-
+#include <wx/colour.h>
 #include <wx/string.h>
 #include <wx/intl.h>
 #include <wx/sstream.h>
@@ -31,7 +30,7 @@
 
 namespace
 {
-const char* WhatsNewURL = "https://youtube.com";
+const char* WhatsNewURL = "https://audacityteam.org/3.1.0-video";
 }
 
 #endif

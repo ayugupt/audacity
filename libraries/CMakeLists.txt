@@ -20,6 +20,13 @@ set( LIBRARIES
    lib-screen-geometry
    lib-project-rate
    lib-ffmpeg-support
+   lib-theme
+   image-compiler # not a library, but has a place in their dependency graph   
+   lib-theme-resources
+   lib-track
+   lib-transactions
+   lib-sample-track
+   lib-module-manager
 )
 
 if ( ${_OPT}has_networking )
@@ -36,4 +43,3 @@ foreach( LIBRARY ${LIBRARIES} )
 endforeach()
 
 set( GRAPH_EDGES "${GRAPH_EDGES}" PARENT_SCOPE )
-set( AUDACITY_LIBRARIES "${AUDACITY_LIBRARIES}" PARENT_SCOPE )

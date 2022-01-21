@@ -2,7 +2,7 @@
 
    Audacity: A Digital Audio Editor
    Audacity(R) is copyright (c) 1999-2016 Audacity Team.
-   License: GPL v2.  See License.txt.
+   License: GPL v2 or later.  See License.txt.
 
    BassTreble.cpp
    Steve Daulton
@@ -120,7 +120,7 @@ bool EffectBassTreble::SupportsRealtime()
 }
 
 
-// EffectClientInterface implementation
+// EffectProcessor implementation
 
 unsigned EffectBassTreble::GetAudioInCount()
 {
@@ -353,7 +353,7 @@ void EffectBassTreble::InstanceInit(EffectBassTrebleState & data, float sampleRa
 }
 
 
-// EffectClientInterface implementation
+// EffectProcessor implementation
 
 
 size_t EffectBassTreble::InstanceProcess(EffectBassTrebleState & data,

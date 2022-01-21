@@ -15,21 +15,7 @@ Paul Licameli split from ProjectSettings.cpp
 #include "Project.h"
 #include "QualitySettings.h"
 #include "XMLWriter.h"
-
-wxDEFINE_EVENT(EVT_PROJECT_RATE_CHANGE, wxEvent);
-
-namespace {
-   struct MyEvent : wxEvent {
-      MyEvent() : wxEvent{ 0, EVT_PROJECT_RATE_CHANGE } {}
-      wxEvent *Clone() const override { return new MyEvent{*this}; }
-   };
-
-   void Notify( AudacityProject &project )
-   {
-      MyEvent e;
-      project.ProcessEvent( e );
-   }
-}
+#include "XMLAttributeValueView.h"
 
 static const AudacityProject::AttachedObjects::RegisteredFactory
 sKey{
@@ -50,7 +36,6 @@ const ProjectRate &ProjectRate::Get( const AudacityProject &project )
 }
 
 ProjectRate::ProjectRate(AudacityProject &project)
-   : mProject{ project }
 {
    int intRate = 0;
    bool wasDefined = QualitySettings::DefaultSampleRate.Read( &intRate );
@@ -74,11 +59,11 @@ void ProjectRate::SetRate(double rate)
 {
    if (rate != mRate) {
       mRate = rate;
-      Notify(mProject);
+      Publish(rate);
    }
 }
 
-static ProjectFileIORegistry::WriterEntry entry {
+static ProjectFileIORegistry::AttributeWriterEntry entry {
 [](const AudacityProject &project, XMLWriter &xmlFile){
    xmlFile.WriteAttr(wxT("rate"), ProjectRate::Get(project).GetRate());
 }
@@ -87,9 +72,8 @@ static ProjectFileIORegistry::WriterEntry entry {
 static ProjectFileIORegistry::AttributeReaderEntries entries {
 // Just a pointer to function, but needing overload resolution as non-const:
 (ProjectRate& (*)(AudacityProject &)) &ProjectRate::Get, {
-   { L"rate", [](auto &settings, auto value){
-      double rate;
-      Internat::CompatibleToDouble(value, &rate);
+   { "rate", [](auto &settings, auto value){
+      double rate = value.Get(settings.GetRate());
       settings.SetRate( rate );
    } },
 } };

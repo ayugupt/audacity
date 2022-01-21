@@ -11,8 +11,8 @@
 #pragma once
 
 #include <wx/font.h>
-#include <wx/event.h>
 
+#include "Observer.h"
 #include "../../../ui/CommonTrackPanelCell.h"
 #include "../../../ui/TextEditHelper.h"
 
@@ -33,7 +33,6 @@ class TrackList;
 class AUDACITY_DLL_API WaveTrackAffordanceControls : 
     public CommonTrackCell,
     public TextEditDelegate,
-    public wxEvtHandler,
     public std::enable_shared_from_this<WaveTrackAffordanceControls>
 {
     std::weak_ptr<WaveClip> mFocusClip;
@@ -43,6 +42,7 @@ class AUDACITY_DLL_API WaveTrackAffordanceControls :
     std::weak_ptr<SelectHandle> mSelectHandle;
     std::weak_ptr<WaveClipTrimHandle> mClipTrimHandle;
 
+    std::weak_ptr<WaveClip> mEditedClip;
     std::shared_ptr<TextEditHelper> mTextEditHelper;
 
     wxFont mClipNameFont;
@@ -84,12 +84,21 @@ public:
             Edit the first clip in the track's list satisfying the test */
     );
 
+    unsigned OnAffordanceClick(const TrackPanelMouseEvent& event, AudacityProject* project);
+
+    bool OnTextCopy(AudacityProject& project);
+    bool OnTextCut(AudacityProject& project);
+    bool OnTextPaste(AudacityProject& project);
+    bool OnTextSelect(AudacityProject& project);
+
 private:
-    void OnTrackChanged(TrackListEvent& evt);
+    void ResetClipNameEdit();
+
+    void OnTrackChanged(const TrackListEvent& evt);
 
     unsigned ExitTextEditing();
 
-    bool SelectNextClip(ViewInfo& viewInfo, AudacityProject* project, bool forward);
-
     std::shared_ptr<TextEditHelper> MakeTextEditHelper(const wxString& text);
+
+    Observer::Subscription mSubscription;
 };

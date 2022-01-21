@@ -5,7 +5,7 @@
   LV2Effect.h
 
   Audacity(R) is copyright (c) 1999-2013 Audacity Team.
-  License: GPL v2.  See License.txt.
+  License: GPL v2 or later.  See License.txt.
 
 *********************************************************************/
 
@@ -21,6 +21,7 @@ class wxArrayString;
 #include <wx/msgqueue.h>
 #include <wx/thread.h>
 #include <wx/timer.h>
+#include <wx/weakref.h>
 
 #include "lv2/atom/forge.h"
 #include "lv2/data-access/data-access.h"
@@ -253,7 +254,6 @@ class LV2Wrapper;
 using URIDMap = std::vector<MallocString<>>;
 
 class LV2Effect final : public wxEvtHandler,
-                        public EffectClientInterface,
                         public EffectUIClientInterface
 {
 public:
@@ -278,9 +278,17 @@ public:
    bool SupportsRealtime() override;
    bool SupportsAutomation() override;
 
-   // EffectClientInterface implementation
+   bool GetAutomationParameters(CommandParameters & parms) override;
+   bool SetAutomationParameters(CommandParameters & parms) override;
 
-   bool SetHost(EffectHostInterface *host) override;
+   bool LoadUserPreset(const RegistryPath & name) override;
+   bool SaveUserPreset(const RegistryPath & name) override;
+
+   RegistryPaths GetFactoryPresets() override;
+   bool LoadFactoryPreset(int id) override;
+   bool LoadFactoryDefaults() override;
+
+   // EffectProcessor implementation
 
    unsigned GetAudioInCount() override;
    unsigned GetAudioOutCount() override;
@@ -295,7 +303,6 @@ public:
    sampleCount GetLatency() override;
    size_t GetTailSize() override;
 
-   bool IsReady() override;
    bool ProcessInitialize(sampleCount totalLen, ChannelNames chanMap = NULL) override;
    bool ProcessFinalize() override;
    size_t ProcessBlock(float **inbuf, float **outbuf, size_t size) override;
@@ -309,27 +316,17 @@ public:
    size_t RealtimeProcess(int group, float **inbuf, float **outbuf, size_t numSamples) override;
    bool RealtimeProcessEnd() override;
 
-   bool ShowInterface( wxWindow &parent,
-      const EffectDialogFactory &factory, bool forceModal = false) override;
-
-   bool GetAutomationParameters(CommandParameters & parms) override;
-   bool SetAutomationParameters(CommandParameters & parms) override;
+   int ShowClientInterface(
+      wxWindow &parent, wxDialog &dialog, bool forceModal) override;
 
    // EffectUIClientInterface implementation
 
-   void SetHostUI(EffectUIHostInterface *host) override;
+   bool SetHost(EffectHostInterface *host) override;
    bool PopulateUI(ShuttleGui &S) override;
    bool IsGraphicalUI() override;
    bool ValidateUI() override;
    bool HideUI() override;
    bool CloseUI() override;
-
-   bool LoadUserPreset(const RegistryPath & name) override;
-   bool SaveUserPreset(const RegistryPath & name) override;
-
-   RegistryPaths GetFactoryPresets() override;
-   bool LoadFactoryPreset(int id) override;
-   bool LoadFactoryDefaults() override;
 
    bool CanExportPresets() override;
    void ExportPresets() override;
@@ -493,7 +490,7 @@ private:
    LV2Wrapper *mProcess;
    std::vector<LV2Wrapper *> mSlaves;
 
-   FloatBuffers mMasterIn, mMasterOut;
+   FloatBuffers mMasterIn;
    size_t mNumSamples;
    size_t mFramePos;
 
@@ -508,9 +505,8 @@ private:
 
    wxTimer mTimer;
 
-   wxDialog *mDialog;
+   wxWeakRef<wxDialog> mDialog;
    wxWindow *mParent;
-   EffectUIHostInterface *mUIHost;
 
    bool mUseGUI;
 

@@ -98,16 +98,6 @@ class PROFILE_DLL_API Sequence final : public XMLTagHandler{
    void SetSamples(constSamplePtr buffer, sampleFormat format,
                    sampleCount start, sampleCount len);
 
-   // where is input, assumed to be nondecreasing, and its size is len + 1.
-   // min, max, rms, bl are outputs, and their lengths are len.
-   // Each position in the output arrays corresponds to one column of pixels.
-   // The column for pixel p covers samples from
-   // where[p] up to (but excluding) where[p + 1].
-   // bl is negative wherever data are not yet available.
-   // Return true if successful.
-   bool GetWaveDisplay(float *min, float *max, float *rms, int* bl,
-                       size_t len, const sampleCount *where) const;
-
    // Return non-null, or else throw!
    // Must pass in the correct factory for the result.  If it's not the same
    // as in this, then block contents must be copied.
@@ -134,9 +124,9 @@ class PROFILE_DLL_API Sequence final : public XMLTagHandler{
    // XMLTagHandler callback methods for loading and saving
    //
 
-   bool HandleXMLTag(const wxChar *tag, const wxChar **attrs) override;
-   void HandleXMLEndTag(const wxChar *tag) override;
-   XMLTagHandler *HandleXMLChild(const wxChar *tag) override;
+   bool HandleXMLTag(const std::string_view& tag, const AttributesList& attrs) override;
+   void HandleXMLEndTag(const std::string_view& tag) override;
+   XMLTagHandler *HandleXMLChild(const std::string_view& tag) override;
    void WriteXML(XMLWriter &xmlFile) const /* not override */;
 
    bool GetErrorOpening() { return mErrorOpening; }
@@ -215,8 +205,6 @@ class PROFILE_DLL_API Sequence final : public XMLTagHandler{
    // Private methods
    //
 
-   int FindBlock(sampleCount pos) const;
-
    SeqBlock::SampleBlockPtr DoAppend(
       constSamplePtr buffer, sampleFormat format, size_t len, bool coalesce);
 
@@ -224,13 +212,6 @@ class PROFILE_DLL_API Sequence final : public XMLTagHandler{
                            BlockArray &blocks,
                            sampleCount &numSamples,
                            const SeqBlock &b);
-
-   static bool Read(samplePtr buffer,
-                    sampleFormat format,
-                    const SeqBlock &b,
-                    size_t blockRelativeStart,
-                    size_t len,
-                    bool mayThrow);
 
    // Accumulate NEW block files onto the end of a block array.
    // Does not change this sequence.  The intent is to use
@@ -255,6 +236,12 @@ public:
    //
    // Public methods
    //
+
+   int FindBlock(sampleCount pos) const;
+
+   static bool Read(samplePtr buffer, sampleFormat format,
+             const SeqBlock &b,
+             size_t blockRelativeStart, size_t len, bool mayThrow);
 
    // This function throws if the track is messed up
    // because of inconsistent block starts & lengths

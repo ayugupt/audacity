@@ -26,6 +26,7 @@
 #include "PluginInterface.h"
 
 #include "AUControl.h"
+#include <wx/weakref.h>
 
 #define AUDIOUNITEFFECTS_VERSION wxT("1.0.0.0")
 /* i18n-hint: the name of an Apple audio software protocol */
@@ -38,7 +39,6 @@ class AudioUnitEffectExportDialog;
 class AudioUnitEffectImportDialog;
 
 class AudioUnitEffect : public wxEvtHandler,
-                        public EffectClientInterface,
                         public EffectUIClientInterface
 {
 public:
@@ -56,7 +56,7 @@ public:
    wxString GetVersion() override;
    TranslatableString GetDescription() override;
 
-   // EffectComponentInterface implementation
+   // EffectDefinitionInterface implementation
 
    EffectType GetType() override;
    EffectFamilySymbol GetFamily() override;
@@ -66,9 +66,17 @@ public:
    bool SupportsRealtime() override;
    bool SupportsAutomation() override;
 
-   // EffectClientInterface implementation
+   bool GetAutomationParameters(CommandParameters & parms) override;
+   bool SetAutomationParameters(CommandParameters & parms) override;
 
-   bool SetHost(EffectHostInterface *host) override;
+   bool LoadUserPreset(const RegistryPath & name) override;
+   bool SaveUserPreset(const RegistryPath & name) override;
+
+   RegistryPaths GetFactoryPresets() override;
+   bool LoadFactoryPreset(int id) override;
+   bool LoadFactoryDefaults() override;
+
+   // EffectProcessor implementation
 
    unsigned GetAudioInCount() override;
    unsigned GetAudioOutCount() override;
@@ -83,7 +91,6 @@ public:
    sampleCount GetLatency() override;
    size_t GetTailSize() override;
 
-   bool IsReady() override;
    bool ProcessInitialize(sampleCount totalLen, ChannelNames chanMap = NULL) override;
    bool ProcessFinalize() override;
    size_t ProcessBlock(float **inBlock, float **outBlock, size_t blockLen) override;
@@ -100,22 +107,12 @@ public:
                                        size_t numSamples) override;
    bool RealtimeProcessEnd() override;
 
-   bool ShowInterface( wxWindow &parent,
-      const EffectDialogFactory &factory, bool forceModal = false) override;
-
-   bool GetAutomationParameters(CommandParameters & parms) override;
-   bool SetAutomationParameters(CommandParameters & parms) override;
-
-   bool LoadUserPreset(const RegistryPath & name) override;
-   bool SaveUserPreset(const RegistryPath & name) override;
-
-   bool LoadFactoryPreset(int id) override;
-   bool LoadFactoryDefaults() override;
-   RegistryPaths GetFactoryPresets() override;
+   int ShowClientInterface(
+      wxWindow &parent, wxDialog &dialog, bool forceModal) override;
 
    // EffectUIClientInterface implementation
 
-   void SetHostUI(EffectUIHostInterface *host) override;
+   bool SetHost(EffectHostInterface *host) override;
    bool PopulateUI(ShuttleGui &S) override;
    bool IsGraphicalUI() override;
    bool ValidateUI() override;
@@ -198,22 +195,18 @@ private:
    bool mUseLatency;
 
    AudioTimeStamp mTimeStamp;
-   bool mReady;
 
    ArrayOf<AudioBufferList> mInputList;
    ArrayOf<AudioBufferList> mOutputList;
 
-   EffectUIHostInterface *mUIHost;
    wxWindow *mParent;
-   wxDialog *mDialog;
+   wxWeakRef<wxDialog> mDialog;
    wxString mUIType; // NOT translated, "Full", "Generic", or "Basic"
    bool mIsGraphical;
 
    AudioUnitEffect *mMaster;     // non-NULL if a slave
    AudioUnitEffectArray mSlaves;
    unsigned mNumChannels;
-   ArraysOf<float> mMasterIn, mMasterOut;
-   size_t mNumSamples;
 
    AUEventListenerRef mEventListenerRef;
 

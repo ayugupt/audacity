@@ -31,7 +31,7 @@ endif()
 # Increment as appropriate after release of a new version, and set back
 # AUDACITY_BUILD_LEVEL to 0
 set( AUDACITY_VERSION 3 )
-set( AUDACITY_RELEASE 1 )
+set( AUDACITY_RELEASE 2 )
 set( AUDACITY_REVISION 0 )
 set( AUDACITY_MODLEVEL 0 )
 
@@ -143,6 +143,10 @@ project( Audacity )
 include( AudacityFunctions )
 
 set_from_env(AUDACITY_ARCH_LABEL) # e.g. x86_64
+
+cmd_option( ${_OPT}bundle_gplv3
+            "Bundle GPLv3 license instead of GPLv2 with the resulting binary."
+            On)
 
 # Allow user to globally set the library preference
 cmd_option( ${_OPT}conan_enabled
@@ -402,6 +406,15 @@ elseif( CMAKE_CXX_COMPILER_ID MATCHES "MSVC" )
    set( HAVE_SSE2 ON )
    if( NOT IS_64BIT )
       set( SSE_FLAG "/arch:SSE2" )
+   endif()
+
+   # Windows 11 SDK has a bug in winnt.h header, which breaks RC invocation
+   # https://issueexplorer.com/issue/microsoft/Windows-Dev-Performance/98
+   # TODO: We need to check if we are building for ARM64 here
+   if( IS_64BIT )
+      set(CMAKE_RC_FLAGS "/D_AMD64_")
+   else()
+      set(CMAKE_RC_FLAGS "/D_X86_")
    endif()
 endif()
 

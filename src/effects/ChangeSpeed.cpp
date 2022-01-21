@@ -28,6 +28,7 @@
 #include "Resample.h"
 #include "../Shuttle.h"
 #include "../ShuttleGui.h"
+#include "../SyncLock.h"
 #include "../widgets/NumericTextCtrl.h"
 #include "../widgets/valnum.h"
 
@@ -136,7 +137,7 @@ EffectType EffectChangeSpeed::GetType()
    return EffectTypeProcess;
 }
 
-// EffectClientInterface implementation
+// EffectProcessor implementation
 bool EffectChangeSpeed::DefineParams( ShuttleParams & S ){
    S.SHUTTLE_PARAM( m_PercentChange, Percentage );
    return true;
@@ -206,8 +207,10 @@ bool EffectChangeSpeed::Startup()
          mFromVinyl = kVinyl_33AndAThird;
       }
 
-      SetPrivateConfig(GetCurrentSettingsGroup(), wxT("TimeFormat"), mFormat.Internal());
-      SetPrivateConfig(GetCurrentSettingsGroup(), wxT("VinylChoice"), mFromVinyl);
+      SetConfig(GetDefinition(), PluginSettings::Private,
+         GetCurrentSettingsGroup(), wxT("TimeFormat"), mFormat.Internal());
+      SetConfig(GetDefinition(), PluginSettings::Private,
+         GetCurrentSettingsGroup(), wxT("VinylChoice"), mFromVinyl);
 
       SaveUserPreset(GetCurrentSettingsGroup());
 
@@ -244,7 +247,7 @@ bool EffectChangeSpeed::Process()
 
    mOutputTracks->Any().VisitWhile( bGoodResult,
       [&](LabelTrack *lt) {
-         if (lt->GetSelected() || lt->IsSyncLockSelected())
+         if (SyncLock::IsSelectedOrSyncLockSelected(lt))
          {
             if (!ProcessLabelTrack(lt))
                bGoodResult = false;
@@ -276,7 +279,7 @@ bool EffectChangeSpeed::Process()
          mCurTrackNum++;
       },
       [&](Track *t) {
-         if (t->IsSyncLockSelected())
+         if (SyncLock::IsSyncLockSelected(t))
             t->SyncLockAdjust(mT1, mT0 + (mT1 - mT0) * mFactor);
       }
    );
@@ -294,12 +297,15 @@ void EffectChangeSpeed::PopulateOrExchange(ShuttleGui & S)
 {
    {
       wxString formatId;
-      GetPrivateConfig(GetCurrentSettingsGroup(), wxT("TimeFormat"),
-                       formatId, mFormat.Internal());
+      GetConfig(GetDefinition(), PluginSettings::Private,
+         GetCurrentSettingsGroup(),
+         wxT("TimeFormat"), formatId, mFormat.Internal());
       mFormat = NumericConverter::LookupFormat(
          NumericConverter::TIME, formatId );
    }
-   GetPrivateConfig(GetCurrentSettingsGroup(), wxT("VinylChoice"), mFromVinyl, mFromVinyl);
+   GetConfig(GetDefinition(), PluginSettings::Private,
+      GetCurrentSettingsGroup(),
+      wxT("VinylChoice"), mFromVinyl, mFromVinyl);
 
    S.SetBorder(5);
 
@@ -457,8 +463,10 @@ bool EffectChangeSpeed::TransferDataFromWindow()
    }
    m_PercentChange = exactPercent;
 
-   SetPrivateConfig(GetCurrentSettingsGroup(), wxT("TimeFormat"), mFormat.Internal());
-   SetPrivateConfig(GetCurrentSettingsGroup(), wxT("VinylChoice"), mFromVinyl);
+   SetConfig(GetDefinition(), PluginSettings::Private,
+      GetCurrentSettingsGroup(), wxT("TimeFormat"), mFormat.Internal());
+   SetConfig(GetDefinition(), PluginSettings::Private,
+      GetCurrentSettingsGroup(), wxT("VinylChoice"), mFromVinyl);
 
    return true;
 }
@@ -662,7 +670,8 @@ void EffectChangeSpeed::OnChoice_Vinyl(wxCommandEvent & WXUNUSED(evt))
    mToVinyl = mpChoice_ToVinyl->GetSelection();
    // Use this as the 'preferred' choice.
    if (mFromVinyl != kVinyl_NA) {
-      SetPrivateConfig(GetCurrentSettingsGroup(), wxT("VinylChoice"), mFromVinyl);
+      SetConfig(GetDefinition(), PluginSettings::Private,
+         GetCurrentSettingsGroup(), wxT("VinylChoice"), mFromVinyl);
    }
 
    // If mFromVinyl & mToVinyl are set, then there's a NEW percent change.
@@ -772,7 +781,8 @@ void EffectChangeSpeed::Update_Vinyl()
             mpChoice_ToVinyl->SetSelection(mpChoice_FromVinyl->GetSelection());
          } else {
             // Use the last saved option.
-            GetPrivateConfig(GetCurrentSettingsGroup(), wxT("VinylChoice"), mFromVinyl, 0);
+            GetConfig(GetDefinition(), PluginSettings::Private,
+               GetCurrentSettingsGroup(), wxT("VinylChoice"), mFromVinyl, 0);
             mpChoice_FromVinyl->SetSelection(mFromVinyl);
             mpChoice_ToVinyl->SetSelection(mFromVinyl);
          }

@@ -59,12 +59,14 @@ effects from this one class.
 #include "../../NoteTrack.h"
 #include "../../TimeTrack.h"
 #include "../../prefs/SpectrogramSettings.h"
-#include "../../PluginManager.h"
+#include "PluginManager.h"
 #include "Project.h"
 #include "ProjectRate.h"
+#include "../../ShuttleAutomation.h"
 #include "../../ShuttleGetDefinition.h"
 #include "../../ShuttleGui.h"
 #include "TempDirectory.h"
+#include "SyncLock.h"
 #include "ViewInfo.h"
 #include "../../WaveClip.h"
 #include "../../WaveTrack.h"
@@ -295,7 +297,7 @@ bool NyquistEffect::IsDefault()
    return mIsPrompt;
 }
 
-// EffectClientInterface implementation
+// EffectProcessor implementation
 bool NyquistEffect::DefineParams( ShuttleParams & S )
 {
    // For now we assume Nyquist can do get and set better than DefineParams can,
@@ -569,11 +571,16 @@ bool NyquistEffect::Init()
 
       for ( auto t :
                TrackList::Get( *project ).Selected< const WaveTrack >() ) {
-         const auto displays = WaveTrackView::Get(*t).GetDisplays();
-         if (displays.end() != std::find(
-            displays.begin(), displays.end(),
-            WaveTrackSubView::Type{ WaveTrackViewConstants::Spectrum, {} }))
-            hasSpectral = true;
+         // Find() not Get() to avoid creation-on-demand of views in case we are
+         // only previewing
+         auto pView = WaveTrackView::Find( t );
+         if ( pView ) {
+            const auto displays = pView->GetDisplays();
+            if (displays.end() != std::find(
+               displays.begin(), displays.end(),
+               WaveTrackSubView::Type{ WaveTrackViewConstants::Spectrum, {} }))
+               hasSpectral = true;
+         }
          if ( hasSpectral &&
              (t->GetSpectrogramSettings().SpectralSelectionEnabled())) {
             bAllowSpectralEditing = true;
@@ -819,7 +826,7 @@ bool NyquistEffect::Process()
          XO("Nyquist Error") );
    }
 
-   Optional<TrackIterRange<WaveTrack>> pRange;
+   std::optional<TrackIterRange<WaveTrack>> pRange;
    if (!bOnePassTool)
       pRange.emplace(mOutputTracks->Selected< WaveTrack >() + &Track::IsLeader);
 
@@ -863,7 +870,7 @@ bool NyquistEffect::Process()
             }
 
             // Check whether we're in the same group as the last selected track
-            Track *gt = *TrackList::SyncLockGroup(mCurTrack[0]).first;
+            Track *gt = *SyncLock::Group(mCurTrack[0]).first;
             mFirstInGroup = !gtLast || (gtLast != gt);
             gtLast = gt;
 
@@ -1009,18 +1016,18 @@ finish:
    return success;
 }
 
-bool NyquistEffect::ShowInterface(
+int NyquistEffect::ShowHostInterface(
    wxWindow &parent, const EffectDialogFactory &factory, bool forceModal)
 {
-   bool res = true;
+   int res = wxID_APPLY;
    if (!(Effect::TestUIFlags(EffectManager::kRepeatNyquistPrompt) && mIsPrompt)) {
       // Show the normal (prompt or effect) interface
-      res = Effect::ShowInterface(parent, factory, forceModal);
+      res = Effect::ShowHostInterface(parent, factory, forceModal);
    }
 
 
    // Remember if the user clicked debug
-   mDebug = (mUIResultID == eDebugID);
+   mDebug = (res == eDebugID);
 
    // We're done if the user clicked "Close", we are not the Nyquist Prompt,
    // or the program currently loaded into the prompt doesn't have a UI.
@@ -1041,7 +1048,7 @@ bool NyquistEffect::ShowInterface(
       effect.SetAutomationParameters(cp);
 
       // Show the normal (prompt or effect) interface
-      res = effect.ShowInterface(parent, factory, forceModal);
+      res = effect.ShowHostInterface(parent, factory, forceModal);
       if (res)
       {
          CommandParameters cp;
@@ -1052,7 +1059,7 @@ bool NyquistEffect::ShowInterface(
    else
    {
       effect.SetCommand(mInputCmd);
-      effect.mDebug = (mUIResultID == eDebugID);
+      effect.mDebug = (res == eDebugID);
       res = Delegate(effect, parent, factory);
       mT0 = effect.mT0;
       mT1 = effect.mT1;
@@ -1071,8 +1078,11 @@ void NyquistEffect::PopulateOrExchange(ShuttleGui & S)
    {
       BuildEffectWindow(S);
    }
+}
 
-   EnableDebug(mDebugButton);
+bool NyquistEffect::EnablesDebug()
+{
+   return mDebugButton;
 }
 
 bool NyquistEffect::TransferDataToWindow()
@@ -1151,22 +1161,27 @@ bool NyquistEffect::ProcessOne()
          [&](const WaveTrack *wt) {
             type = wxT("wave");
             spectralEditp = mCurTrack[0]->GetSpectrogramSettings().SpectralSelectionEnabled()? wxT("T") : wxT("NIL");
-            auto displays = WaveTrackView::Get( *wt ).GetDisplays();
-            auto format = [&]( decltype(displays[0]) display ) {
-               // Get the English name of the view type, without menu codes,
-               // as a string that Lisp can examine
-               return wxString::Format( wxT("\"%s\""),
-                  display.name.Stripped().Debug() );
-            };
-            if (displays.empty())
-               view = wxT("NIL");
-            else if (displays.size() == 1)
-               view = format( displays[0] );
-            else {
-               view = wxT("(list");
-               for ( auto display : displays )
-                  view += wxString(wxT(" ")) + format( display );
-               view += wxT(")");
+            view = wxT("NIL");
+            // Find() not Get() to avoid creation-on-demand of views in case we are
+            // only previewing
+            if ( const auto pView = WaveTrackView::Find( wt ) ) {
+               auto displays = pView->GetDisplays();
+               auto format = [&]( decltype(displays[0]) display ) {
+                  // Get the English name of the view type, without menu codes,
+                  // as a string that Lisp can examine
+                  return wxString::Format( wxT("\"%s\""),
+                     display.name.Stripped().Debug() );
+               };
+               if (displays.empty())
+                  ;
+               else if (displays.size() == 1)
+                  view = format( displays[0] );
+               else {
+                  view = wxT("(list");
+                  for ( auto display : displays )
+                     view += wxString(wxT(" ")) + format( display );
+                  view += wxT(")");
+               }
             }
          },
 #if defined(USE_MIDI)
@@ -1618,9 +1633,9 @@ bool NyquistEffect::ProcessOne()
 
       // If we were first in the group adjust non-selected group tracks
       if (mFirstInGroup) {
-         for (auto t : TrackList::SyncLockGroup(mCurTrack[i]))
+         for (auto t : SyncLock::Group(mCurTrack[i]))
          {
-            if (!t->GetSelected() && t->IsSyncLockSelected()) {
+            if (!t->GetSelected() && SyncLock::IsSyncLockSelected(t)) {
                t->SyncLockAdjust(mT1, mT0 + out->GetEndTime());
             }
          }

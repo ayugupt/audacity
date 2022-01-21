@@ -26,7 +26,7 @@
 
 
 #include "VSTEffect.h"
-#include "../../ModuleManager.h"
+#include "ModuleManager.h"
 #include "SampleCount.h"
 
 #include "../../widgets/ProgressDialog.h"
@@ -221,8 +221,10 @@ enum InfoKeys
 /// Information about one VST effect.
 ///
 ///////////////////////////////////////////////////////////////////////////////
-class VSTSubProcess final : public wxProcess,
-                      public EffectDefinitionInterface
+//! This object exists in a separate process, to validate a newly seen plug-in.
+/*! It needs to implement EffectDefinitionInterface but mostly just as stubs */
+class VSTSubProcess final : public wxProcess
+   , public EffectDefinitionInterface
 {
 public:
    VSTSubProcess()
@@ -230,7 +232,7 @@ public:
       Redirect();
    }
 
-   // EffectClientInterface implementation
+   // EffectDefinitionInterface implementation
 
    PluginPath GetPath() override
    {
@@ -291,6 +293,16 @@ public:
    {
       return mAutomatable;
    }
+
+   bool GetAutomationParameters(CommandParameters &) override { return true; }
+   bool SetAutomationParameters(CommandParameters &) override { return true; }
+
+   bool LoadUserPreset(const RegistryPath &) override { return true; }
+   bool SaveUserPreset(const RegistryPath &) override { return true; }
+
+   RegistryPaths GetFactoryPresets() override { return {}; }
+   bool LoadFactoryPreset(int) override { return true; }
+   bool LoadFactoryDefaults() override { return true; }
 
 public:
    wxString mPath;
@@ -513,7 +525,7 @@ unsigned VSTEffectsModule::DiscoverPluginsAtPath(
    wxString effectIDs = wxT("0;");
    wxStringTokenizer effectTzr(effectIDs, wxT(";"));
 
-   Optional<ProgressDialog> progress{};
+   std::optional<ProgressDialog> progress{};
    size_t idCnt = 0;
    size_t idNdx = 0;
 
@@ -756,7 +768,8 @@ void VSTEffectsModule::Check(const wxChar *path)
 class VSTEffectOptionsDialog final : public wxDialogWrapper
 {
 public:
-   VSTEffectOptionsDialog(wxWindow * parent, EffectHostInterface *host);
+   VSTEffectOptionsDialog(wxWindow * parent,
+      EffectHostInterface &host, EffectDefinitionInterface &effect);
    virtual ~VSTEffectOptionsDialog();
 
    void PopulateOrExchange(ShuttleGui & S);
@@ -764,7 +777,8 @@ public:
    void OnOk(wxCommandEvent & evt);
 
 private:
-   EffectHostInterface *mHost;
+   EffectHostInterface &mHost;
+   EffectDefinitionInterface &mEffect;
    int mBufferSize;
    bool mUseLatency;
    bool mUseGUI;
@@ -776,14 +790,20 @@ BEGIN_EVENT_TABLE(VSTEffectOptionsDialog, wxDialogWrapper)
    EVT_BUTTON(wxID_OK, VSTEffectOptionsDialog::OnOk)
 END_EVENT_TABLE()
 
-VSTEffectOptionsDialog::VSTEffectOptionsDialog(wxWindow * parent, EffectHostInterface *host)
+VSTEffectOptionsDialog::VSTEffectOptionsDialog(wxWindow * parent,
+   EffectHostInterface &host, EffectDefinitionInterface &effect)
 :  wxDialogWrapper(parent, wxID_ANY, XO("VST Effect Options"))
+, mHost{ host }
+, mEffect{ effect }
 {
    mHost = host;
 
-   mHost->GetSharedConfig(wxT("Options"), wxT("BufferSize"), mBufferSize, 8192);
-   mHost->GetSharedConfig(wxT("Options"), wxT("UseLatency"), mUseLatency, true);
-   mHost->GetSharedConfig(wxT("Options"), wxT("UseGUI"), mUseGUI, true);
+   GetConfig(mEffect, PluginSettings::Shared, wxT("Options"),
+      wxT("BufferSize"), mBufferSize, 8192);
+   GetConfig(mEffect, PluginSettings::Shared, wxT("Options"),
+      wxT("UseLatency"), mUseLatency, true);
+   GetConfig(mEffect, PluginSettings::Shared, wxT("Options"),
+      wxT("UseGUI"), mUseGUI, true);
 
    ShuttleGui S(this, eIsCreating);
    PopulateOrExchange(S);
@@ -876,9 +896,12 @@ void VSTEffectOptionsDialog::OnOk(wxCommandEvent & WXUNUSED(evt))
    ShuttleGui S(this, eIsGettingFromDialog);
    PopulateOrExchange(S);
 
-   mHost->SetSharedConfig(wxT("Options"), wxT("BufferSize"), mBufferSize);
-   mHost->SetSharedConfig(wxT("Options"), wxT("UseLatency"), mUseLatency);
-   mHost->SetSharedConfig(wxT("Options"), wxT("UseGUI"), mUseGUI);
+   SetConfig(mEffect, PluginSettings::Shared, wxT("Options"),
+      wxT("BufferSize"), mBufferSize);
+   SetConfig(mEffect, PluginSettings::Shared, wxT("Options"),
+      wxT("UseLatency"), mUseLatency);
+   SetConfig(mEffect, PluginSettings::Shared, wxT("Options"),
+      wxT("UseGUI"), mUseGUI);
 
    EndModal(wxID_OK);
 }
@@ -1133,7 +1156,6 @@ VSTEffect::VSTEffect(const PluginPath & path, VSTEffect *master)
    mHost = NULL;
    mModule = NULL;
    mAEffect = NULL;
-   mDialog = NULL;
 
    mTimer = std::make_unique<VSTEffectTimer>(this);
    mTimerGuard = 0;
@@ -1176,11 +1198,6 @@ VSTEffect::VSTEffect(const PluginPath & path, VSTEffect *master)
 
 VSTEffect::~VSTEffect()
 {
-   if (mDialog)
-   {
-      mDialog->Close();
-   }
-
    Unload();
 }
 
@@ -1286,7 +1303,7 @@ bool VSTEffect::SupportsAutomation()
 }
 
 // ============================================================================
-// EffectClientInterface Implementation
+// EffectProcessor Implementation
 // ============================================================================
 
 bool VSTEffect::SetHost(EffectHostInterface *host)
@@ -1313,18 +1330,23 @@ bool VSTEffect::SetHost(EffectHostInterface *host)
    if (mHost)
    {
       int userBlockSize;
-      mHost->GetSharedConfig(wxT("Options"), wxT("BufferSize"), userBlockSize, 8192);
+      GetConfig(*this, PluginSettings::Shared, wxT("Options"),
+         wxT("BufferSize"), userBlockSize, 8192);
       mUserBlockSize = std::max( 1, userBlockSize );
-      mHost->GetSharedConfig(wxT("Options"), wxT("UseLatency"), mUseLatency, true);
+      GetConfig(*this, PluginSettings::Shared, wxT("Options"),
+         wxT("UseLatency"), mUseLatency, true);
 
       mBlockSize = mUserBlockSize;
 
       bool haveDefaults;
-      mHost->GetPrivateConfig(mHost->GetFactoryDefaultsGroup(), wxT("Initialized"), haveDefaults, false);
+      GetConfig(*this, PluginSettings::Private,
+         mHost->GetFactoryDefaultsGroup(), wxT("Initialized"), haveDefaults,
+         false);
       if (!haveDefaults)
       {
          SaveParameters(mHost->GetFactoryDefaultsGroup());
-         mHost->SetPrivateConfig(mHost->GetFactoryDefaultsGroup(), wxT("Initialized"), true);
+         SetConfig(*this, PluginSettings::Private,
+            mHost->GetFactoryDefaultsGroup(), wxT("Initialized"), true);
       }
 
       LoadParameters(mHost->GetCurrentSettingsGroup());
@@ -1454,9 +1476,6 @@ void VSTEffect::SetChannelCount(unsigned numChannels)
 
 bool VSTEffect::RealtimeInitialize()
 {
-   mMasterIn.reinit( mAudioIns, mBlockSize, true );
-   mMasterOut.reinit( mAudioOuts, mBlockSize );
-
    return ProcessInitialize(0, NULL);
 }
 
@@ -1502,10 +1521,6 @@ bool VSTEffect::RealtimeFinalize()
       slave->ProcessFinalize();
    mSlaves.clear();
 
-   mMasterIn.reset();
-
-   mMasterOut.reset();
-
    return ProcessFinalize();
 }
 
@@ -1531,38 +1546,17 @@ bool VSTEffect::RealtimeResume()
 
 bool VSTEffect::RealtimeProcessStart()
 {
-   for (unsigned int i = 0; i < mAudioIns; i++)
-      memset(mMasterIn[i].get(), 0, mBlockSize * sizeof(float));
-
-   mNumSamples = 0;
-
    return true;
 }
 
 size_t VSTEffect::RealtimeProcess(int group, float **inbuf, float **outbuf, size_t numSamples)
 {
    wxASSERT(numSamples <= mBlockSize);
-
-   for (unsigned int c = 0; c < mAudioIns; c++)
-   {
-      for (decltype(numSamples) s = 0; s < numSamples; s++)
-      {
-         mMasterIn[c][s] += inbuf[c][s];
-      }
-   }
-   mNumSamples = std::max(numSamples, mNumSamples);
-
    return mSlaves[group]->ProcessBlock(inbuf, outbuf, numSamples);
 }
 
 bool VSTEffect::RealtimeProcessEnd()
 {
-   // These casts to float** should be safe...
-   ProcessBlock(
-      reinterpret_cast <float**> (mMasterIn.get()),
-      reinterpret_cast <float**> (mMasterOut.get()),
-      mNumSamples);
-
    return true;
 }
 
@@ -1592,19 +1586,9 @@ bool VSTEffect::RealtimeProcessEnd()
 /// provided by the effect, so it will not work with all effects since they don't
 /// all provide the information (kn0ck0ut is one).
 ///
-bool VSTEffect::ShowInterface(
-   wxWindow &parent, const EffectDialogFactory &factory, bool forceModal)
+int VSTEffect::ShowClientInterface(
+   wxWindow &parent, wxDialog &dialog, bool forceModal)
 {
-   if (mDialog)
-   {
-      if ( mDialog->Close(true) )
-         mDialog = nullptr;
-      return false;
-   }
-
-   // mDialog is null
-   auto cleanup = valueRestorer( mDialog );
-
    //   mProcessLevel = 1;      // in GUI thread
 
    // Set some defaults since some VSTs need them...these will be reset when
@@ -1616,25 +1600,17 @@ bool VSTEffect::ShowInterface(
       ProcessInitialize(0, NULL);
    }
 
-   if ( factory )
-      mDialog = factory(parent, mHost, this);
-   if (!mDialog)
-   {
-      return false;
-   }
+   // Remember the dialog with a weak pointer, but don't control its lifetime
+   mDialog = &dialog;
    mDialog->CentreOnParent();
 
    if (SupportsRealtime() && !forceModal)
    {
       mDialog->Show();
-      cleanup.release();
-
-      return false;
+      return 0;
    }
 
-   bool res = mDialog->ShowModal() != 0;
-
-   return res;
+   return mDialog->ShowModal();
 }
 
 bool VSTEffect::GetAutomationParameters(CommandParameters & parms)
@@ -1747,11 +1723,6 @@ bool VSTEffect::LoadFactoryDefaults()
 // EffectUIClientInterface implementation
 // ============================================================================
 
-void VSTEffect::SetHostUI(EffectUIHostInterface *host)
-{
-   mUIHost = host;
-}
-
 bool VSTEffect::PopulateUI(ShuttleGui &S)
 {
    auto parent = S.GetParent();
@@ -1761,7 +1732,7 @@ bool VSTEffect::PopulateUI(ShuttleGui &S)
    mParent->PushEventHandler(this);
 
    // Determine if the VST editor is supposed to be used or not
-   mHost->GetSharedConfig(wxT("Options"),
+   GetConfig(*this, PluginSettings::Shared, wxT("Options"),
                           wxT("UseGUI"),
                           mGui,
                           true);
@@ -1833,7 +1804,6 @@ bool VSTEffect::CloseUI()
    mDisplays.reset();
    mLabels.reset();
 
-   mUIHost = NULL;
    mParent = NULL;
    mDialog = NULL;
 
@@ -1980,14 +1950,16 @@ bool VSTEffect::HasOptions()
 
 void VSTEffect::ShowOptions()
 {
-   VSTEffectOptionsDialog dlg(mParent, mHost);
+   VSTEffectOptionsDialog dlg(mParent, *mHost, *this);
    if (dlg.ShowModal())
    {
       // Reinitialize configuration settings
       int userBlockSize;
-      mHost->GetSharedConfig(wxT("Options"), wxT("BufferSize"), userBlockSize, 8192);
+      GetConfig(*this, PluginSettings::Shared, wxT("Options"),
+         wxT("BufferSize"), userBlockSize, 8192);
       mUserBlockSize = std::max( 1, userBlockSize );
-      mHost->GetSharedConfig(wxT("Options"), wxT("UseLatency"), mUseLatency, true);
+      GetConfig(*this, PluginSettings::Shared, wxT("Options"),
+         wxT("UseLatency"), mUseLatency, true);
    }
 }
 
@@ -2321,9 +2293,12 @@ bool VSTEffect::LoadParameters(const RegistryPath & group)
    wxString value;
 
    VstPatchChunkInfo info = {1, mAEffect->uniqueID, mAEffect->version, mAEffect->numParams, ""};
-   mHost->GetPrivateConfig(group, wxT("UniqueID"), info.pluginUniqueID, info.pluginUniqueID);
-   mHost->GetPrivateConfig(group, wxT("Version"), info.pluginVersion, info.pluginVersion);
-   mHost->GetPrivateConfig(group, wxT("Elements"), info.numElements, info.numElements);
+   GetConfig(*this, PluginSettings::Private, group, wxT("UniqueID"),
+      info.pluginUniqueID, info.pluginUniqueID);
+   GetConfig(*this, PluginSettings::Private, group, wxT("Version"),
+      info.pluginVersion, info.pluginVersion);
+   GetConfig(*this, PluginSettings::Private, group, wxT("Elements"),
+      info.numElements, info.numElements);
 
    if ((info.pluginUniqueID != mAEffect->uniqueID) ||
        (info.pluginVersion != mAEffect->version) ||
@@ -2332,7 +2307,8 @@ bool VSTEffect::LoadParameters(const RegistryPath & group)
       return false;
    }
 
-   if (mHost->GetPrivateConfig(group, wxT("Chunk"), value, wxEmptyString))
+   if (GetConfig(*this,
+      PluginSettings::Private, group, wxT("Chunk"), value, wxEmptyString))
    {
       ArrayOf<char> buf{ value.length() / 4 * 3 };
 
@@ -2346,7 +2322,8 @@ bool VSTEffect::LoadParameters(const RegistryPath & group)
    }
 
    wxString parms;
-   if (!mHost->GetPrivateConfig(group, wxT("Parameters"), parms, wxEmptyString))
+   if (!GetConfig(*this,
+      PluginSettings::Private, group, wxT("Parameters"), parms, wxEmptyString))
    {
       return false;
    }
@@ -2362,9 +2339,12 @@ bool VSTEffect::LoadParameters(const RegistryPath & group)
 
 bool VSTEffect::SaveParameters(const RegistryPath & group)
 {
-   mHost->SetPrivateConfig(group, wxT("UniqueID"), mAEffect->uniqueID);
-   mHost->SetPrivateConfig(group, wxT("Version"), mAEffect->version);
-   mHost->SetPrivateConfig(group, wxT("Elements"), mAEffect->numParams);
+   SetConfig(*this, PluginSettings::Private, group, wxT("UniqueID"),
+      mAEffect->uniqueID);
+   SetConfig(*this, PluginSettings::Private, group, wxT("Version"),
+      mAEffect->version);
+   SetConfig(*this, PluginSettings::Private, group, wxT("Elements"),
+      mAEffect->numParams);
 
    if (mAEffect->flags & effFlagsProgramChunks)
    {
@@ -2375,7 +2355,8 @@ bool VSTEffect::SaveParameters(const RegistryPath & group)
          return false;
       }
 
-      mHost->SetPrivateConfig(group, wxT("Chunk"), VSTEffect::b64encode(chunk, clen));
+      SetConfig(*this, PluginSettings::Private, group, wxT("Chunk"),
+         VSTEffect::b64encode(chunk, clen));
       return true;
    }
 
@@ -2391,7 +2372,8 @@ bool VSTEffect::SaveParameters(const RegistryPath & group)
       return false;
    }
 
-   return mHost->SetPrivateConfig(group, wxT("Parameters"), parms);
+   return SetConfig(*this, PluginSettings::Private,
+      group, wxT("Parameters"), parms);
 }
 
 void VSTEffect::OnTimer()
@@ -3698,25 +3680,18 @@ void VSTEffect::SaveXML(const wxFileName & fn)
    xmlFile.Commit();
 }
 
-bool VSTEffect::HandleXMLTag(const wxChar *tag, const wxChar **attrs)
+bool VSTEffect::HandleXMLTag(const std::string_view& tag, const AttributesList &attrs)
 {
-   if (wxStrcmp(tag, wxT("vstprogrampersistence")) == 0)
+   if (tag == "vstprogrampersistence")
    {
-      while (*attrs)
+      for (auto pair : attrs)
       {
-         const wxChar *attr = *attrs++;
-         const wxChar *value = *attrs++;
+         auto attr = pair.first;
+         auto value = pair.second;
 
-         if (!value)
+         if (attr == "version")
          {
-            break;
-         }
-
-         const wxString strValue = value;
-
-         if (wxStrcmp(attr, wxT("version")) == 0)
-         {
-            if (!XMLValueChecker::IsGoodInt(strValue) || !strValue.ToLong(&mXMLVersion))
+            if (!value.TryGet(mXMLVersion))
             {
                return false;
             }
@@ -3735,7 +3710,7 @@ bool VSTEffect::HandleXMLTag(const wxChar *tag, const wxChar **attrs)
       return true;
    }
 
-   if (wxStrcmp(tag, wxT("effect")) == 0)
+   if (tag == "effect")
    {
       memset(&mXMLInfo, 0, sizeof(mXMLInfo));
       mXMLInfo.version = 1;
@@ -3743,29 +3718,19 @@ bool VSTEffect::HandleXMLTag(const wxChar *tag, const wxChar **attrs)
       mXMLInfo.pluginVersion = mAEffect->version;
       mXMLInfo.numElements = mAEffect->numParams;
 
-      while (*attrs)
+      for (auto pair : attrs)
       {
-         const wxChar *attr = *attrs++;
-         const wxChar *value = *attrs++;
+         auto attr = pair.first;
+         auto value = pair.second;
 
-         if (!value)
+         if (attr == "name")
          {
-            break;
-         }
+            wxString strValue = value.ToWString();
 
-         const wxString strValue = value;
-
-         if (wxStrcmp(attr, wxT("name")) == 0)
-         {
-            if (!XMLValueChecker::IsGoodString(strValue))
-            {
-               return false;
-            }
-
-            if (value != GetSymbol().Internal())
+            if (strValue != GetSymbol().Internal())
             {
                auto msg = XO("This parameter file was saved from %s. Continue?")
-                  .Format( value );
+                  .Format( strValue );
                int result = AudacityMessageBox(
                   msg,
                   XO("Confirm"),
@@ -3777,30 +3742,30 @@ bool VSTEffect::HandleXMLTag(const wxChar *tag, const wxChar **attrs)
                }
             }
          }
-         else if (wxStrcmp(attr, wxT("version")) == 0)
+         else if (attr == "version")
          {
             long version;
-            if (!XMLValueChecker::IsGoodInt(strValue) || !strValue.ToLong(&version))
+            if (!value.TryGet(version))
             {
                return false;
             }
 
             mXMLInfo.pluginVersion = (int) version;
          }
-         else if (mXMLVersion > 1 && wxStrcmp(attr, wxT("uniqueID")) == 0)
+         else if (mXMLVersion > 1 && attr == "uniqueID")
          {
             long uniqueID;
-            if (!XMLValueChecker::IsGoodInt(strValue) || !strValue.ToLong(&uniqueID))
+            if (!value.TryGet(uniqueID))
             {
                return false;
             }
 
             mXMLInfo.pluginUniqueID = (int) uniqueID;
          }
-         else if (mXMLVersion > 1 && wxStrcmp(attr, wxT("numParams")) == 0)
+         else if (mXMLVersion > 1 && attr == "numParams")
          {
             long numParams;
-            if (!XMLValueChecker::IsGoodInt(strValue) || !strValue.ToLong(&numParams))
+            if (!value.TryGet(numParams))
             {
                return false;
             }
@@ -3816,26 +3781,16 @@ bool VSTEffect::HandleXMLTag(const wxChar *tag, const wxChar **attrs)
       return true;
    }
 
-   if (wxStrcmp(tag, wxT("program")) == 0)
+   if (tag == "program")
    {
-      while (*attrs)
+      for (auto pair : attrs)
       {
-         const wxChar *attr = *attrs++;
-         const wxChar *value = *attrs++;
+         auto attr = pair.first;
+         auto value = pair.second;
 
-         if (!value)
+         if (attr == "name")
          {
-            break;
-         }
-
-         const wxString strValue = value;
-
-         if (wxStrcmp(attr, wxT("name")) == 0)
-         {
-            if (!XMLValueChecker::IsGoodString(strValue))
-            {
-               return false;
-            }
+            const wxString strValue = value.ToWString();
 
             if (strValue.length() > 24)
             {
@@ -3870,25 +3825,19 @@ bool VSTEffect::HandleXMLTag(const wxChar *tag, const wxChar **attrs)
       return true;
    }
 
-   if (wxStrcmp(tag, wxT("param")) == 0)
+   if (tag == "param")
    {
       long ndx = -1;
       double val = -1.0;
-      while (*attrs)
+
+      for (auto pair : attrs)
       {
-         const wxChar *attr = *attrs++;
-         const wxChar *value = *attrs++;
+         auto attr = pair.first;
+         auto value = pair.second;
 
-         if (!value)
+         if (attr == "index")
          {
-            break;
-         }
-
-         const wxString strValue = value;
-
-         if (wxStrcmp(attr, wxT("index")) == 0)
-         {
-            if (!XMLValueChecker::IsGoodInt(strValue) || !strValue.ToLong(&ndx))
+            if (!value.TryGet(ndx))
             {
                return false;
             }
@@ -3900,18 +3849,15 @@ bool VSTEffect::HandleXMLTag(const wxChar *tag, const wxChar **attrs)
                return false;
             }
          }
-         else if (wxStrcmp(attr, wxT("name")) == 0)
+         // "name" attribute is ignored for params
+         /* else if (attr == "name")
          {
-            if (!XMLValueChecker::IsGoodString(strValue))
-            {
-               return false;
-            }
+
             // Nothing to do with it for now
-         }
-         else if (wxStrcmp(attr, wxT("value")) == 0)
+         }*/
+         else if (attr == "value")
          {
-            if (!XMLValueChecker::IsGoodInt(strValue) ||
-               !Internat::CompatibleToDouble(strValue, &val))
+            if (!value.TryGet(val))
             {
                return false;
             }
@@ -3933,7 +3879,7 @@ bool VSTEffect::HandleXMLTag(const wxChar *tag, const wxChar **attrs)
       return true;
    }
 
-   if (wxStrcmp(tag, wxT("chunk")) == 0)
+   if (tag == "chunk")
    {
       mInChunk = true;
       return true;
@@ -3942,9 +3888,9 @@ bool VSTEffect::HandleXMLTag(const wxChar *tag, const wxChar **attrs)
    return false;
 }
 
-void VSTEffect::HandleXMLEndTag(const wxChar *tag)
+void VSTEffect::HandleXMLEndTag(const std::string_view& tag)
 {
-   if (wxStrcmp(tag, wxT("chunk")) == 0)
+   if (tag == "chunk")
    {
       if (mChunk.length())
       {
@@ -3961,7 +3907,7 @@ void VSTEffect::HandleXMLEndTag(const wxChar *tag)
       mInChunk = false;
    }
 
-   if (wxStrcmp(tag, wxT("program")) == 0)
+   if (tag == "program")
    {
       if (mInSet)
       {
@@ -3972,37 +3918,37 @@ void VSTEffect::HandleXMLEndTag(const wxChar *tag)
    }
 }
 
-void VSTEffect::HandleXMLContent(const wxString & content)
+void VSTEffect::HandleXMLContent(const std::string_view& content)
 {
    if (mInChunk)
    {
-      mChunk += wxString(content).Trim(true).Trim(false);
+      mChunk += wxString(std::string(content)).Trim(true).Trim(false);
    }
 }
 
-XMLTagHandler *VSTEffect::HandleXMLChild(const wxChar *tag)
+XMLTagHandler *VSTEffect::HandleXMLChild(const std::string_view& tag)
 {
-   if (wxStrcmp(tag, wxT("vstprogrampersistence")) == 0)
+   if (tag == "vstprogrampersistence")
    {
       return this;
    }
 
-   if (wxStrcmp(tag, wxT("effect")) == 0)
+   if (tag == "effect")
    {
       return this;
    }
 
-   if (wxStrcmp(tag, wxT("program")) == 0)
+   if (tag == "program")
    {
       return this;
    }
 
-   if (wxStrcmp(tag, wxT("param")) == 0)
+   if (tag == "param")
    {
       return this;
    }
 
-   if (wxStrcmp(tag, wxT("chunk")) == 0)
+   if (tag == "chunk")
    {
       return this;
    }

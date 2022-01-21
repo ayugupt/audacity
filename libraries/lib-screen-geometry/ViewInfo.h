@@ -13,34 +13,21 @@
 
 #include <utility>
 #include <vector>
-#include <wx/event.h> // inherit wxEvtHandler
 #include <wx/weakref.h> // member variable
 #include "SelectedRegion.h"
 #include <memory>
+#include "Observer.h"
 #include "Prefs.h"
 #include "XMLMethodRegistry.h"
 #include "ZoomInfo.h" // to inherit
 
-
-class NotifyingSelectedRegion;
-
-struct SelectedRegionEvent : public wxEvent
-{
-   SelectedRegionEvent( wxEventType commandType,
-                       NotifyingSelectedRegion *pRegion );
-
-   wxEvent *Clone() const override;
-
-   wxWeakRef< NotifyingSelectedRegion > pRegion;
-};
-
-// To do:  distinguish time changes from frequency changes perhaps?
-wxDECLARE_EXPORTED_EVENT( SCREEN_GEOMETRY_API,
-                          EVT_SELECTED_REGION_CHANGE, SelectedRegionEvent );
+struct NotifyingSelectedRegionMessage : Observer::Message {};
 
 // This heavyweight wrapper of the SelectedRegion structure emits events
 // on mutating operations, that other classes can listen for.
-class SCREEN_GEOMETRY_API NotifyingSelectedRegion : public wxEvtHandler
+class SCREEN_GEOMETRY_API NotifyingSelectedRegion
+   : public Observer::Publisher<NotifyingSelectedRegionMessage>
+   , public wxTrackable
 {
 public:
    // Expose SelectedRegion's const accessors
@@ -56,12 +43,12 @@ public:
    // does not emit events
    void WriteXMLAttributes
       (XMLWriter &xmlFile,
-       const wxChar *legacyT0Name, const wxChar *legacyT1Name) const
+       const char *legacyT0Name, const char *legacyT1Name) const
    { mRegion.WriteXMLAttributes(xmlFile, legacyT0Name, legacyT1Name); }
 
    //! Return some information used for deserialization purposes by ViewInfo
    static XMLMethodRegistryBase::Mutators<NotifyingSelectedRegion>
-      Mutators(const wxString &legacyT0Name, const wxString &legacyT1Name);
+      Mutators(const char *legacyT0Name, const char *legacyT1Name);
 
    // const-only access allows assignment from this into a SelectedRegion
    // or otherwise passing it into a function taking const SelectedRegion&
@@ -112,20 +99,10 @@ enum : int {
    kTrackInfoSliderExtra = 5,
 };
 
-class PlayRegion;
+struct PlayRegionMessage : Observer::Message {};
 
-struct PlayRegionEvent : public wxEvent
-{
-   PlayRegionEvent( wxEventType commandType, PlayRegion *pRegion );
-   wxEvent *Clone() const override;
-
-   wxWeakRef< PlayRegion > pRegion;
-};
-
-wxDECLARE_EXPORTED_EVENT( SCREEN_GEOMETRY_API,
-   EVT_PLAY_REGION_CHANGE, PlayRegionEvent );
-
-class SCREEN_GEOMETRY_API PlayRegion : public wxEvtHandler
+class SCREEN_GEOMETRY_API PlayRegion
+   : public Observer::Publisher<PlayRegionMessage>
 {
 public:
    PlayRegion() = default;
@@ -133,15 +110,17 @@ public:
    PlayRegion( const PlayRegion& ) = delete;
    PlayRegion &operator= ( const PlayRegion &that )
    {
-      mLocked = that.mLocked;
+      mActive = that.mActive;
       // Guarantee the equivalent un-swapped order of endpoints
       mStart = that.GetStart();
       mEnd = that.GetEnd();
+      mLastActiveStart = that.GetLastActiveStart();
+      mLastActiveEnd = that.GetLastActiveEnd();
       return *this;
    }
 
-   bool Locked() const { return mLocked; }
-   void SetLocked( bool locked ) { mLocked = locked; }
+   bool Active() const { return mActive; }
+   void SetActive( bool active );
 
    bool Empty() const { return GetStart() == GetEnd(); }
    double GetStart() const
@@ -158,10 +137,33 @@ public:
       else
          return std::max( mStart, mEnd );
    }
+   double GetLastActiveStart() const
+   {
+      if ( mLastActiveEnd < 0 )
+         return mLastActiveStart;
+      else
+         return std::min( mLastActiveStart, mLastActiveEnd );
+   }
+   double GetLastActiveEnd() const
+   {
+      if ( mLastActiveStart < 0 )
+         return mLastActiveEnd;
+      else
+         return std::max( mLastActiveStart, mLastActiveEnd );
+   }
 
    void SetStart( double start );
    void SetEnd( double end );
    void SetTimes( double start, double end );
+   // Set current and last active times the same regardless of activation:
+   void SetAllTimes( double start, double end );
+
+   //! Set to an invalid state
+   void Clear();
+   //! Test whether in invalid state
+   bool IsClear() const;
+   //! Test whether last active region is in invalid state
+   bool IsLastActiveRegionClear() const;
 
    void Order();
 
@@ -169,14 +171,20 @@ private:
    void Notify();
 
    // Times:
-   double mStart{ -1.0 };
-   double mEnd{ -1.0 };
+   static constexpr auto invalidValue = std::numeric_limits<double>::min();
 
-   bool mLocked{ false };
+   double mStart { invalidValue };
+   double mEnd { invalidValue };
+   double mLastActiveStart { invalidValue };
+   double mLastActiveEnd { invalidValue };
+
+   bool mActive{ false };
 };
 
+extern SCREEN_GEOMETRY_API const TranslatableString LoopToggleText;
+
 class SCREEN_GEOMETRY_API ViewInfo final
-   : public wxEvtHandler, public ZoomInfo
+   : public ZoomInfo
 {
 public:
    static ViewInfo &Get( AudacityProject &project );

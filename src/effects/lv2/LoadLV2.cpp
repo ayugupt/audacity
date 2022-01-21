@@ -5,7 +5,7 @@
   LV2Effect.h
 
   Audacity(R) is copyright (c) 1999-2008 Audacity Team.
-  License: GPL v2.  See License.txt.
+  License: GPL v2 or later.  See License.txt.
 
 *******************************************************************//**
 
@@ -23,7 +23,7 @@ Functions that find and load all LV2 plugins on the system.
 #endif
 
 #include "LoadLV2.h"
-#include "../../ModuleManager.h"
+#include "ModuleManager.h"
 
 #include <cstdio>
 #include <cstdlib>

@@ -52,14 +52,14 @@ a graph for EffectScienFilter.
 #include <wx/utils.h>
 #include <wx/valgen.h>
 
-#include "../AColor.h"
-#include "../AllThemeResources.h"
+#include "AColor.h"
+#include "AllThemeResources.h"
 #include "PlatformCompatibility.h"
 #include "Prefs.h"
 #include "Project.h"
 #include "../Shuttle.h"
 #include "../ShuttleGui.h"
-#include "../Theme.h"
+#include "Theme.h"
 #include "../WaveTrack.h"
 #include "../widgets/valnum.h"
 #include "../widgets/AudacityMessageBox.h"
@@ -205,7 +205,7 @@ EffectType EffectScienFilter::GetType()
    return EffectTypeProcess;
 }
 
-// EffectClientInterface implementation
+// EffectProcessor implementation
 
 unsigned EffectScienFilter::GetAudioInCount()
 {

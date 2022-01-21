@@ -42,11 +42,8 @@
 #ifndef __AUDACITY_EFFECTINTERFACE_H__
 #define __AUDACITY_EFFECTINTERFACE_H__
 
-#include <functional>
-
 #include "ComponentInterface.h"
 #include "ComponentInterfaceSymbol.h"
-#include "ConfigInterface.h"
 #include "EffectAutomationParameters.h" // for command automation
 
 class ShuttleGui;
@@ -68,70 +65,89 @@ using EffectFamilySymbol = ComponentInterfaceSymbol;
 
 \class EffectDefinitionInterface 
 
-\brief EffectDefinitionInterface is a ComponentInterface that additionally tracks
-flag-functions for interactivity, play-preview and whether the effect can run without a GUI.
+\brief EffectDefinitionInterface is a ComponentInterface that adds some basic
+read-only information about effect properties, and getting and setting of
+parameters.
 
 *******************************************************************************************/
 class COMPONENTS_API EffectDefinitionInterface  /* not final */ : public ComponentInterface
 {
 public:
+   //! A utility that strips spaces and CamelCases a name.
+   static Identifier GetSquashedName(const Identifier &ident);
+
    virtual ~EffectDefinitionInterface();
 
-   // Type determines how it behaves.
+   //! Type determines how it behaves.
    virtual EffectType GetType() = 0;
-   // Classification determines which menu it appears in.
-   virtual EffectType GetClassification() { return GetType();}
 
+   //! Determines which menu it appears in; default same as GetType().
+   virtual EffectType GetClassification();
+
+   //! Report identifier and user-visible name of the effect protocol
    virtual EffectFamilySymbol GetFamily() = 0;
 
-   // These should move to the "EffectClientInterface" class once all
-   // effects have been converted.
+   //! Whether the effect needs a dialog for entry of settings
    virtual bool IsInteractive() = 0;
 
-   // I don't really like this, but couldn't think of a better way to force the
-   // effect to appear "above the line" in the menus.
+   //! Whether the effect sorts "above the line" in the menus
    virtual bool IsDefault() = 0;
 
    // This will go away when all Effects have been updated to the new
    // interface.
    virtual bool IsLegacy() = 0;
 
-   // Whether the effect supports realtime previewing (while audio is playing).
+   //! Whether the effect supports realtime previewing (while audio is playing).
    virtual bool SupportsRealtime() = 0;
 
-   // Can the effect be used without the UI.
+   //! Whether the effect can be used without the UI, in a macro.
    virtual bool SupportsAutomation() = 0;
+
+   //! Whether the effect dialog should have a Debug button; default, always false.
+   virtual bool EnablesDebug();
+
+   //! Name of a page in the Audacity alpha manual, default is empty
+   virtual ManualPageID ManualPage();
+
+   //! Fully qualified local help file name, default is empty
+   virtual FilePath HelpPage();
+
+   //! Default is false
+   virtual bool IsHiddenFromMenus();
+
+   // Some effects will use define params to define what parameters they take.
+   // If they do, they won't need to implement Get or SetAutomation parameters.
+   // since the Effect class can do it.  Or at least that is how things happen
+   // in AudacityCommand.  IF we do the same in class Effect, then Effect maybe
+   // should derive by some route from AudacityCommand to pick up that
+   // functionality.
+   //virtual bool DefineParams( ShuttleParams & S);
+
+   //! Save current settings into parms
+   virtual bool GetAutomationParameters(CommandParameters & parms) = 0;
+   //! Change settings to those stored in parms
+   virtual bool SetAutomationParameters(CommandParameters & parms) = 0;
+
+   //! Change settings to a user-named preset
+   virtual bool LoadUserPreset(const RegistryPath & name) = 0;
+   //! Save current settings as a user-named preset
+   virtual bool SaveUserPreset(const RegistryPath & name) = 0;
+
+   //! Report names of factory presets
+   virtual RegistryPaths GetFactoryPresets() = 0;
+   //! Change settings to the preset whose name is `GetFactoryPresets()[id]`
+   virtual bool LoadFactoryPreset(int id) = 0;
+   //! Change settings back to "factory default"
+   virtual bool LoadFactoryDefaults() = 0;
 };
 
 class wxDialog;
 class wxWindow;
-class EffectUIHostInterface;
+
 class EffectUIClientInterface;
 
-/*************************************************************************************//**
-
-\class EffectHostInterface 
-
-\brief EffectHostInterface is a decorator of a EffectUIClientInterface.  It adds 
-virtual (abstract) functions to get presets and actually apply the effect.  It uses
-ConfigClientInterface to add Getters/setters for private and shared configs. 
-
-*******************************************************************************************/
-class COMPONENTS_API EffectHostInterface  /* not final */ : public ConfigClientInterface
-{
-public:
-   virtual ~EffectHostInterface();
-
-   virtual double GetDefaultDuration() = 0;
-   virtual double GetDuration() = 0;
-   virtual NumericFormatSymbol GetDurationFormat() = 0;
-   virtual void SetDuration(double seconds) = 0;
-
-   // Preset handling
-   virtual RegistryPath GetUserPresetsGroup(const RegistryPath & name) = 0;
-   virtual RegistryPath GetCurrentSettingsGroup() = 0;
-   virtual RegistryPath GetFactoryDefaultsGroup() = 0;
-};
+// Incomplete type not defined in libraries -- TODO clean that up:
+class EffectHostInterface;
 
 class sampleCount;
 
@@ -174,24 +190,18 @@ typedef enum
 
 /*************************************************************************************//**
 
-\class EffectClientInterface 
+\class EffectProcessor 
 
 \brief EffectClientInterface provides the ident interface to Effect, and is what makes
-Effect into a plug-in command.  It has functions for realtime that are not part of 
+Effect into a plug-in command.  It has functions for effect calculations that are not part of
 AudacityCommand.
 
 *******************************************************************************************/
-class COMPONENTS_API EffectClientInterface  /* not final */ : public EffectDefinitionInterface
+class COMPONENTS_API EffectProcessor  /* not final */
+   : public EffectDefinitionInterface
 {
 public:
-   using EffectDialogFactory = std::function<
-      wxDialog* ( wxWindow &parent,
-         EffectHostInterface*, EffectUIClientInterface* )
-   >;
-
-   virtual ~EffectClientInterface();
-
-   virtual bool SetHost(EffectHostInterface *host) = 0;
+   virtual ~EffectProcessor();
 
    virtual unsigned GetAudioInCount() = 0;
    virtual unsigned GetAudioOutCount() = 0;
@@ -204,13 +214,18 @@ public:
    virtual size_t SetBlockSize(size_t maxBlockSize) = 0;
    virtual size_t GetBlockSize() const = 0;
 
+   //! Called for destructive, non-realtime effect computation
    virtual sampleCount GetLatency() = 0;
    virtual size_t GetTailSize() = 0;
 
-   virtual bool IsReady() = 0;
+   //! Called for destructive, non-realtime effect computation
    virtual bool ProcessInitialize(sampleCount totalLen, ChannelNames chanMap = NULL) = 0;
+
+   //! Called for destructive, non-realtime effect computation
    // This may be called during stack unwinding:
    virtual bool ProcessFinalize() /* noexcept */ = 0;
+
+   //! Called for destructive, non-realtime effect computation
    virtual size_t ProcessBlock(float **inBlock, float **outBlock, size_t blockLen) = 0;
 
    virtual bool RealtimeInitialize() = 0;
@@ -221,42 +236,6 @@ public:
    virtual bool RealtimeProcessStart() = 0;
    virtual size_t RealtimeProcess(int group, float **inBuf, float **outBuf, size_t numSamples) = 0;
    virtual bool RealtimeProcessEnd() = 0;
-
-   virtual bool ShowInterface(
-      wxWindow &parent, const EffectDialogFactory &factory,
-      bool forceModal = false
-   ) = 0;
-   // Some effects will use define params to define what parameters they take.
-   // If they do, they won't need to implement Get or SetAutomation parameters.
-   // since the Effect class can do it.  Or at least that is how things happen
-   // in AudacityCommand.  IF we do the same in class Effect, then Effect maybe 
-   // should derive by some route from AudacityCommand to pick up that 
-   // functionality.
-   //virtual bool DefineParams( ShuttleParams & S){ return false;};
-   virtual bool GetAutomationParameters(CommandParameters & parms) = 0;
-   virtual bool SetAutomationParameters(CommandParameters & parms) = 0;
-
-   virtual bool LoadUserPreset(const RegistryPath & name) = 0;
-   virtual bool SaveUserPreset(const RegistryPath & name) = 0;
-
-   virtual RegistryPaths GetFactoryPresets() = 0;
-   virtual bool LoadFactoryPreset(int id) = 0;
-   virtual bool LoadFactoryDefaults() = 0;
-};
-
-/*************************************************************************************//**
-
-\class EffectUIHostInterface
-
-\brief EffectUIHostInterface has nothing in it.  It is provided so that an Effect
-can call SetHostUI passing in a pointer to an EffectUIHostInterface.  It contains no 
-functionality and is provided, apparently, for type checking.  Since only EffectUIHost
-uses it, EffectUIHost could be used instead.
-*******************************************************************************************/
-class COMPONENTS_API EffectUIHostInterface
-{
-public:
-   virtual ~EffectUIHostInterface();
 };
 
 /*************************************************************************************//**
@@ -268,13 +247,26 @@ values.  It can import and export presets.
 
 *******************************************************************************************/
 class COMPONENTS_API EffectUIClientInterface /* not final */
+   : public EffectProcessor
 {
 public:
    virtual ~EffectUIClientInterface();
 
-   virtual void SetHostUI(EffectUIHostInterface *host) = 0;
+   /*!
+    @return 0 if destructive effect processing should not proceed (and there
+    may be a non-modal dialog still opened); otherwise, modal dialog return code
+    */
+   virtual int ShowClientInterface(
+      wxWindow &parent, wxDialog &dialog, bool forceModal = false
+   ) = 0;
+
+   virtual bool SetHost(EffectHostInterface *host) = 0;
+
    virtual bool IsGraphicalUI() = 0;
+
+   //! Adds controls to a panel that is given as the parent window of `S`
    virtual bool PopulateUI(ShuttleGui &S) = 0;
+
    virtual bool ValidateUI() = 0;
    virtual bool HideUI() = 0;
    virtual bool CloseUI() = 0;

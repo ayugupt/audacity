@@ -23,7 +23,6 @@
 #include <wx/wxprec.h>
 
 #ifndef WX_PRECOMP
-#include <wx/app.h>
 #include <wx/choice.h>
 #include <wx/event.h>
 #include <wx/intl.h>
@@ -33,10 +32,10 @@
 #include <wx/tooltip.h>
 #endif
 
-#include "../AColor.h"
-#include "../AllThemeResources.h"
+#include "AColor.h"
+#include "AllThemeResources.h"
 #include "../AudioIO.h"
-#include "../ImageManipulation.h"
+#include "ImageManipulation.h"
 #include "../KeyboardCapture.h"
 #include "Prefs.h"
 #include "../widgets/ASlider.h"
@@ -132,19 +131,15 @@ void MixerToolBar::Populate()
    Add(2, -1);
 
    // Listen for capture events
-   wxTheApp->Bind(EVT_AUDIOIO_CAPTURE,
-                  &MixerToolBar::OnAudioCapture,
-                  this);
+   mSubscription = AudioIO::Get()
+      ->Subscribe(*this, &MixerToolBar::OnAudioCapture);
 }
 
-void MixerToolBar::OnAudioCapture(wxCommandEvent & event)
+void MixerToolBar::OnAudioCapture(AudioIOEvent event)
 {
-   event.Skip();
-
-   AudacityProject *p = &mProject;
-   if ((AudacityProject *) event.GetEventObject() != p)
+   if (event.type == AudioIOEvent::CAPTURE && event.pProject != &mProject)
    {
-      mEnabled = !event.GetInt();
+      mEnabled = !event.on;
       mInputSlider->Enable(mEnabled);
       mOutputSlider->Enable(mEnabled);
    }
@@ -321,9 +316,7 @@ void MixerToolBar::SetToolTips()
    }
 
    if (mOutputSlider->IsEnabled()) {
-      auto format = (AudioIO::Get()->OutputMixerEmulated()
-         ? XO("Playback Volume: %.2f (emulated)")
-         : XO("Playback Volume: %.2f"));
+      auto format = XO("Playback Volume: %.2f");
 
       mOutputSlider->SetToolTipTemplate( format );
    }

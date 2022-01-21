@@ -20,32 +20,31 @@
 #include "TimeWarper.h"
 
 #include <algorithm>
+#include <thread>
 
 #include <wx/defs.h>
 #include <wx/sizer.h>
-#include <wx/tokenzr.h>
 
 #include "../AudioIO.h"
 #include "widgets/wxWidgetsWindowPlacement.h"
-#include "../DBConnection.h"
 #include "../LabelTrack.h"
-#include "../Mix.h"
-#include "../PluginManager.h"
+#include "../MixAndRender.h"
+#include "PluginManager.h"
 #include "../ProjectAudioManager.h"
-#include "../ProjectFileIO.h"
 #include "../ProjectSettings.h"
 #include "QualitySettings.h"
 #include "../SelectFile.h"
+#include "../ShuttleAutomation.h"
 #include "../ShuttleGui.h"
-#include "../Shuttle.h"
+#include "../SyncLock.h"
+#include "TransactionScope.h"
 #include "ViewInfo.h"
 #include "../WaveTrack.h"
 #include "wxFileNameWrapper.h"
 #include "../widgets/ProgressDialog.h"
-#include "../tracks/playabletrack/wavetrack/ui/WaveTrackView.h"
-#include "../tracks/playabletrack/wavetrack/ui/WaveTrackViewConstants.h"
 #include "../widgets/NumericTextCtrl.h"
 #include "../widgets/AudacityMessageBox.h"
+#include "../widgets/VetoDialogHook.h"
 
 #include <unordered_map>
 
@@ -62,25 +61,6 @@ const wxString Effect::kCurrentSettingsIdent = wxT("<Current Settings>");
 const wxString Effect::kFactoryDefaultsIdent = wxT("<Factory Defaults>");
 
 using t2bHash = std::unordered_map< void*, bool >;
-
-namespace {
-
-Effect::VetoDialogHook &GetVetoDialogHook()
-{
-   static Effect::VetoDialogHook sHook = nullptr;
-   return sHook;
-}
-
-}
-
-auto Effect::SetVetoDialogHook( VetoDialogHook hook )
-   -> VetoDialogHook
-{
-   auto &theHook = GetVetoDialogHook();
-   auto result = theHook;
-   theHook = hook;
-   return result;
-}
 
 Effect::Effect()
 {
@@ -99,8 +79,6 @@ Effect::Effect()
    mProgress = NULL;
 
    mUIParent = NULL;
-   mUIDialog = NULL;
-   mUIFlags = 0;
 
    mNumAudioIn = 0;
    mNumAudioOut = 0;
@@ -108,8 +86,6 @@ Effect::Effect()
    mBufferSize = 0;
    mBlockSize = 0;
    mNumChannels = 0;
-
-   mUIDebug = false;
 
    // PRL:  I think this initialization of mProjectRate doesn't matter
    // because it is always reassigned in DoEffect before it is used
@@ -122,10 +98,11 @@ Effect::Effect()
 
 Effect::~Effect()
 {
-   if (mUIDialog)
-   {
-      mUIDialog->Close();
-   }
+   // Destroying what is usually the unique Effect object of its subclass,
+   // which lasts until the end of the session.
+   // Maybe there is a non-modal realtime dialog still open.
+   if (mHostUIDialog)
+      mHostUIDialog->Close();
 }
 
 // EffectDefinitionInterface implementation
@@ -252,7 +229,7 @@ bool Effect::SupportsAutomation()
    return true;
 }
 
-// EffectClientInterface implementation
+// EffectProcessor implementation
 
 bool Effect::SetHost(EffectHostInterface *host)
 {
@@ -354,16 +331,6 @@ size_t Effect::GetTailSize()
    }
 
    return 0;
-}
-
-bool Effect::IsReady()
-{
-   if (mClient)
-   {
-      return mClient->IsReady();
-   }
-
-   return true;
 }
 
 bool Effect::ProcessInitialize(sampleCount totalLen, ChannelNames chanMap)
@@ -478,57 +445,66 @@ bool Effect::RealtimeProcessEnd()
    return true;
 }
 
-bool Effect::ShowInterface(wxWindow &parent,
-   const EffectDialogFactory &factory, bool forceModal)
+int Effect::ShowClientInterface(
+   wxWindow &parent, wxDialog &dialog, bool forceModal)
 {
-   if (!IsInteractive())
-   {
-      return true;
-   }
-
-   if (mUIDialog)
-   {
-      if ( mUIDialog->Close(true) )
-         mUIDialog = nullptr;
-      return false;
-   }
-
-   if (mClient)
-   {
-      return mClient->ShowInterface(parent, factory, forceModal);
-   }
-
-   // mUIDialog is null
-   auto cleanup = valueRestorer( mUIDialog );
-   
-   if ( factory )
-      mUIDialog = factory(parent, this, this);
-   if (!mUIDialog)
-   {
-      return false;
-   }
-
-
+   // Remember the dialog with a weak pointer, but don't control its lifetime
+   mUIDialog = &dialog;
    mUIDialog->Layout();
    mUIDialog->Fit();
    mUIDialog->SetMinSize(mUIDialog->GetSize());
 
-   auto hook = GetVetoDialogHook();
-   if( hook && hook( mUIDialog ) )
-      return false;
+   if( ::CallVetoDialogHook( mUIDialog ) )
+      return 0;
 
    if( SupportsRealtime() && !forceModal )
    {
       mUIDialog->Show();
-      cleanup.release();
-
       // Return false to bypass effect processing
-      return false;
+      return 0;
    }
 
-   bool res = mUIDialog->ShowModal() != 0;
+   return mUIDialog->ShowModal();
+}
 
-   return res;
+int Effect::ShowHostInterface(wxWindow &parent,
+   const EffectDialogFactory &factory, bool forceModal)
+{
+   if (!IsInteractive())
+      // Effect without UI just proceeds quietly to apply it destructively.
+      return wxID_APPLY;
+
+   if (mHostUIDialog)
+   {
+      // Realtime effect has shown its nonmodal dialog, now hides it, and does
+      // nothing else.
+      if ( mHostUIDialog->Close(true) )
+         mHostUIDialog = nullptr;
+      return 0;
+   }
+
+   // Create the dialog
+   // Host, not client, is responsible for invoking the factory and managing
+   // the lifetime of the dialog.
+   // The usual factory lets the client (which is this, when self-hosting)
+   // populate it.  That factory function is called indirectly through a
+   // std::function to avoid source code dependency cycles.
+   const auto client = mClient ? mClient : this;
+   mHostUIDialog = factory(parent, *this, *client);
+   if (!mHostUIDialog)
+      return 0;
+
+   // Let the client show the dialog and decide whether to keep it open
+   auto result = client->ShowClientInterface(parent, *mHostUIDialog, forceModal);
+   if (!mHostUIDialog->IsShown())
+      // Client didn't show it, or showed it modally and closed it
+      // So destroy it.
+      // (I think mHostUIDialog only needs to be a local variable in this
+      // function -- that it is always null when the function begins -- but
+      // that may change. PRL)
+      mHostUIDialog->Destroy();
+
+   return result;
 }
 
 bool Effect::GetAutomationParameters(CommandParameters & parms)
@@ -559,12 +535,13 @@ bool Effect::LoadUserPreset(const RegistryPath & name)
    }
 
    wxString parms;
-   if (!GetPrivateConfig(name, wxT("Parameters"), parms))
+   if (!GetConfig(GetDefinition(), PluginSettings::Private,
+      name, wxT("Parameters"), parms))
    {
       return false;
    }
 
-   return SetAutomationParameters(parms);
+   return SetAutomationParametersFromString(parms);
 }
 
 bool Effect::SaveUserPreset(const RegistryPath & name)
@@ -575,12 +552,11 @@ bool Effect::SaveUserPreset(const RegistryPath & name)
    }
 
    wxString parms;
-   if (!GetAutomationParameters(parms))
-   {
+   if (!GetAutomationParametersAsString(parms))
       return false;
-   }
 
-   return SetPrivateConfig(name, wxT("Parameters"), parms);
+   return SetConfig(GetDefinition(), PluginSettings::Private,
+      name, wxT("Parameters"), parms);
 }
 
 RegistryPaths Effect::GetFactoryPresets()
@@ -614,10 +590,6 @@ bool Effect::LoadFactoryDefaults()
 }
 
 // EffectUIClientInterface implementation
-
-void Effect::SetHostUI(EffectUIHostInterface *WXUNUSED(host))
-{
-}
 
 bool Effect::PopulateUI(ShuttleGui &S)
 {
@@ -677,9 +649,9 @@ static const FileNames::FileTypes &PresetTypes()
 void Effect::ExportPresets()
 {
    wxString params;
-   GetAutomationParameters(params);
-   wxString commandId = GetSquashedName(GetSymbol().Internal()).GET();
-   params =  commandId + ":" + params;
+   GetAutomationParametersAsString(params);
+   auto commandId = GetSquashedName(GetSymbol().Internal());
+   params =  commandId.GET() + ":" + params;
 
    auto path = SelectFile(FileNames::Operation::Presets,
                                      XO("Export Effect Parameters"),
@@ -744,7 +716,7 @@ void Effect::ImportPresets()
          wxString ident = params.BeforeFirst(':');
          params = params.AfterFirst(':');
 
-         wxString commandId = GetSquashedName(GetSymbol().Internal()).GET();
+         auto commandId = GetSquashedName(GetSymbol().Internal());
 
          if (ident != commandId) {
             // effect identifiers are a sensible length!
@@ -765,36 +737,12 @@ void Effect::ImportPresets()
             }
             return;
          }
-         SetAutomationParameters(params);
+         SetAutomationParametersFromString(params);
       }
    }
 
    //SetWindowTitle();
 
-}
-
-CommandID Effect::GetSquashedName(wxString name)
-{
-   // Get rid of leading and trailing white space
-   name.Trim(true).Trim(false);
-
-   if (name.empty())
-   {
-      return name;
-   }
-
-   wxStringTokenizer st(name, wxT(" "));
-   wxString id;
-
-   // CamelCase the name
-   while (st.HasMoreTokens())
-   {
-      wxString tok = st.GetNextToken();
-
-      id += tok.Left(1).MakeUpper() + tok.Mid(1).MakeLower();
-   }
-
-   return id;
 }
 
 bool Effect::HasOptions()
@@ -807,6 +755,11 @@ void Effect::ShowOptions()
 }
 
 // EffectHostInterface implementation
+
+EffectDefinitionInterface &Effect::GetDefinition()
+{
+   return mClient ? *mClient : *this;
+}
 
 double Effect::GetDefaultDuration()
 {
@@ -844,7 +797,8 @@ void Effect::SetDuration(double seconds)
 
    if (GetType() == EffectTypeGenerate)
    {
-      SetPrivateConfig(GetCurrentSettingsGroup(), wxT("LastUsedDuration"), seconds);
+      SetConfig(GetDefinition(), PluginSettings::Private,
+         GetCurrentSettingsGroup(), wxT("LastUsedDuration"), seconds);
    }
 
    mDuration = seconds;
@@ -878,160 +832,9 @@ wxString Effect::GetSavedStateGroup()
    return wxT("SavedState");
 }
 
-// ConfigClientInterface implementation
-bool Effect::HasSharedConfigGroup(const RegistryPath & group)
-{
-   return PluginManager::Get().HasSharedConfigGroup(GetID(), group);
-}
-
-bool Effect::GetSharedConfigSubgroups(const RegistryPath & group, RegistryPaths &subgroups)
-{
-   return PluginManager::Get().GetSharedConfigSubgroups(GetID(), group, subgroups);
-}
-
-bool Effect::GetSharedConfig(const RegistryPath & group, const RegistryPath & key, wxString & value, const wxString & defval)
-{
-   return PluginManager::Get().GetSharedConfig(GetID(), group, key, value, defval);
-}
-
-bool Effect::GetSharedConfig(const RegistryPath & group, const RegistryPath & key, int & value, int defval)
-{
-   return PluginManager::Get().GetSharedConfig(GetID(), group, key, value, defval);
-}
-
-bool Effect::GetSharedConfig(const RegistryPath & group, const RegistryPath & key, bool & value, bool defval)
-{
-   return PluginManager::Get().GetSharedConfig(GetID(), group, key, value, defval);
-}
-
-bool Effect::GetSharedConfig(const RegistryPath & group, const RegistryPath & key, float & value, float defval)
-{
-   return PluginManager::Get().GetSharedConfig(GetID(), group, key, value, defval);
-}
-
-bool Effect::GetSharedConfig(const RegistryPath & group, const RegistryPath & key, double & value, double defval)
-{
-   return PluginManager::Get().GetSharedConfig(GetID(), group, key, value, defval);
-}
-
-bool Effect::SetSharedConfig(const RegistryPath & group, const RegistryPath & key, const wxString & value)
-{
-   return PluginManager::Get().SetSharedConfig(GetID(), group, key, value);
-}
-
-bool Effect::SetSharedConfig(const RegistryPath & group, const RegistryPath & key, const int & value)
-{
-   return PluginManager::Get().SetSharedConfig(GetID(), group, key, value);
-}
-
-bool Effect::SetSharedConfig(const RegistryPath & group, const RegistryPath & key, const bool & value)
-{
-   return PluginManager::Get().SetSharedConfig(GetID(), group, key, value);
-}
-
-bool Effect::SetSharedConfig(const RegistryPath & group, const RegistryPath & key, const float & value)
-{
-   return PluginManager::Get().SetSharedConfig(GetID(), group, key, value);
-}
-
-bool Effect::SetSharedConfig(const RegistryPath & group, const RegistryPath & key, const double & value)
-{
-   return PluginManager::Get().SetSharedConfig(GetID(), group, key, value);
-}
-
-bool Effect::RemoveSharedConfigSubgroup(const RegistryPath & group)
-{
-   return PluginManager::Get().RemoveSharedConfigSubgroup(GetID(), group);
-}
-
-bool Effect::RemoveSharedConfig(const RegistryPath & group, const RegistryPath & key)
-{
-   return PluginManager::Get().RemoveSharedConfig(GetID(), group, key);
-}
-
-bool Effect::HasPrivateConfigGroup(const RegistryPath & group)
-{
-   return PluginManager::Get().HasPrivateConfigGroup(GetID(), group);
-}
-
-bool Effect::GetPrivateConfigSubgroups(const RegistryPath & group, RegistryPaths & subgroups)
-{
-   return PluginManager::Get().GetPrivateConfigSubgroups(GetID(), group, subgroups);
-}
-
-bool Effect::GetPrivateConfig(const RegistryPath & group, const RegistryPath & key, wxString & value, const wxString & defval)
-{
-   return PluginManager::Get().GetPrivateConfig(GetID(), group, key, value, defval);
-}
-
-bool Effect::GetPrivateConfig(const RegistryPath & group, const RegistryPath & key, int & value, int defval)
-{
-   return PluginManager::Get().GetPrivateConfig(GetID(), group, key, value, defval);
-}
-
-bool Effect::GetPrivateConfig(const RegistryPath & group, const RegistryPath & key, bool & value, bool defval)
-{
-   return PluginManager::Get().GetPrivateConfig(GetID(), group, key, value, defval);
-}
-
-bool Effect::GetPrivateConfig(const RegistryPath & group, const RegistryPath & key, float & value, float defval)
-{
-   return PluginManager::Get().GetPrivateConfig(GetID(), group, key, value, defval);
-}
-
-bool Effect::GetPrivateConfig(const RegistryPath & group, const RegistryPath & key, double & value, double defval)
-{
-   return PluginManager::Get().GetPrivateConfig(GetID(), group, key, value, defval);
-}
-
-bool Effect::SetPrivateConfig(const RegistryPath & group, const RegistryPath & key, const wxString & value)
-{
-   return PluginManager::Get().SetPrivateConfig(GetID(), group, key, value);
-}
-
-bool Effect::SetPrivateConfig(const RegistryPath & group, const RegistryPath & key, const int & value)
-{
-   return PluginManager::Get().SetPrivateConfig(GetID(), group, key, value);
-}
-
-bool Effect::SetPrivateConfig(const RegistryPath & group, const RegistryPath & key, const bool & value)
-{
-   return PluginManager::Get().SetPrivateConfig(GetID(), group, key, value);
-}
-
-bool Effect::SetPrivateConfig(const RegistryPath & group, const RegistryPath & key, const float & value)
-{
-   return PluginManager::Get().SetPrivateConfig(GetID(), group, key, value);
-}
-
-bool Effect::SetPrivateConfig(const RegistryPath & group, const RegistryPath & key, const double & value)
-{
-   return PluginManager::Get().SetPrivateConfig(GetID(), group, key, value);
-}
-
-bool Effect::RemovePrivateConfigSubgroup(const RegistryPath & group)
-{
-   return PluginManager::Get().RemovePrivateConfigSubgroup(GetID(), group);
-}
-
-bool Effect::RemovePrivateConfig(const RegistryPath & group, const RegistryPath & key)
-{
-   return PluginManager::Get().RemovePrivateConfig(GetID(), group, key);
-}
-
 // Effect implementation
 
-PluginID Effect::GetID()
-{
-   if (mClient)
-   {
-      return PluginManager::GetID(mClient);
-   }
-
-   return PluginManager::GetID(this);
-}
-
-bool Effect::Startup(EffectClientInterface *client)
+bool Effect::Startup(EffectUIClientInterface *client)
 {
    // Let destructor know we need to be shutdown
    mClient = client;
@@ -1048,11 +851,13 @@ bool Effect::Startup(EffectClientInterface *client)
    mNumAudioOut = GetAudioOutCount();
 
    bool haveDefaults;
-   GetPrivateConfig(GetFactoryDefaultsGroup(), wxT("Initialized"), haveDefaults, false);
+   GetConfig(GetDefinition(), PluginSettings::Private, GetFactoryDefaultsGroup(),
+      wxT("Initialized"), haveDefaults, false);
    if (!haveDefaults)
    {
       SaveUserPreset(GetFactoryDefaultsGroup());
-      SetPrivateConfig(GetFactoryDefaultsGroup(), wxT("Initialized"), true);
+      SetConfig(GetDefinition(), PluginSettings::Private, GetFactoryDefaultsGroup(),
+         wxT("Initialized"), true);
    }
    LoadUserPreset(GetCurrentSettingsGroup());
 
@@ -1064,7 +869,7 @@ bool Effect::Startup()
    return true;
 }
 
-bool Effect::GetAutomationParameters(wxString & parms)
+bool Effect::GetAutomationParametersAsString(wxString & parms)
 {
    CommandParameters eap;
 
@@ -1087,7 +892,7 @@ bool Effect::GetAutomationParameters(wxString & parms)
    return eap.GetParameters(parms);
 }
 
-bool Effect::SetAutomationParameters(const wxString & parms)
+bool Effect::SetAutomationParametersFromString(const wxString & parms)
 {
    wxString preset = parms;
    bool success = false;
@@ -1148,41 +953,6 @@ bool Effect::SetAutomationParameters(const wxString & parms)
    return TransferDataToWindow();
 }
 
-RegistryPaths Effect::GetUserPresets()
-{
-   RegistryPaths presets;
-
-   GetPrivateConfigSubgroups(GetUserPresetsGroup(wxEmptyString), presets);
-
-   std::sort( presets.begin(), presets.end() );
-
-   return presets;
-}
-
-bool Effect::HasCurrentSettings()
-{
-   return HasPrivateConfigGroup(GetCurrentSettingsGroup());
-}
-
-bool Effect::HasFactoryDefaults()
-{
-   return HasPrivateConfigGroup(GetFactoryDefaultsGroup());
-}
-
-ManualPageID Effect::ManualPage()
-{
-   return {};
-}
-
-FilePath Effect::HelpPage()
-{
-   return {};
-}
-
-void Effect::SetUIFlags(unsigned flags) {
-   mUIFlags = flags;
-}
-
 unsigned Effect::TestUIFlags(unsigned mask) {
    return mask & mUIFlags;
 }
@@ -1210,22 +980,22 @@ bool Effect::DoEffect(double projectRate,
                       TrackList *list,
                       WaveTrackFactory *factory,
                       NotifyingSelectedRegion &selectedRegion,
+                      unsigned flags,
                       wxWindow *pParent,
                       const EffectDialogFactory &dialogFactory)
 {
+   auto cleanup0 = valueRestorer(mUIFlags, flags);
    wxASSERT(selectedRegion.duration() >= 0.0);
 
    mOutputTracks.reset();
 
-   mpSelectedRegion = &selectedRegion;
    mFactory = factory;
    mProjectRate = projectRate;
    mTracks = list;
 
    // This is for performance purposes only, no additional recovery implied
    auto &pProject = *const_cast<AudacityProject*>(FindProject()); // how to remove this const_cast?
-   auto &pIO = ProjectFileIO::Get(pProject);
-   TransactionScope trans(pIO.GetConnection(), "Effect");
+   TransactionScope trans(pProject, "Effect");
 
    // Update track/group counts
    CountWaveTracks();
@@ -1235,7 +1005,9 @@ bool Effect::DoEffect(double projectRate,
    mDuration = 0.0;
    if (GetType() == EffectTypeGenerate)
    {
-      GetPrivateConfig(GetCurrentSettingsGroup(), wxT("LastUsedDuration"), mDuration, GetDefaultDuration());
+      GetConfig(GetDefinition(), PluginSettings::Private,
+         GetCurrentSettingsGroup(),
+         wxT("LastUsedDuration"), mDuration, GetDefaultDuration());
    }
 
    WaveTrack *newTrack{};
@@ -1306,7 +1078,7 @@ bool Effect::DoEffect(double projectRate,
    // Prompting may call Effect::Preview
    if ( pParent && dialogFactory &&
       IsInteractive() &&
-      !ShowInterface( *pParent, dialogFactory, IsBatchProcessing() ) )
+      !ShowHostInterface( *pParent, dialogFactory, IsBatchProcessing() ) )
    {
       return false;
    }
@@ -1315,13 +1087,14 @@ bool Effect::DoEffect(double projectRate,
    bool skipFlag = CheckWhetherSkipEffect();
    if (skipFlag == false)
    {
+      using namespace BasicUI;
       auto name = GetName();
-      ProgressDialog progress{
+      auto progress = MakeProgress(
          name,
          XO("Applying %s...").Format( name ),
-         pdlgHideStopButton
-      };
-      auto vr = valueRestorer( mProgress, &progress );
+         ProgressShowCancel
+      );
+      auto vr = valueRestorer( mProgress, progress.get() );
 
       {
          returnVal = Process();
@@ -1344,18 +1117,13 @@ bool Effect::Delegate(
    region.setTimes( mT0, mT1 );
 
    return delegate.DoEffect( mProjectRate, mTracks, mFactory,
-      region, &parent, factory );
+      region, mUIFlags, &parent, factory );
 }
 
 // All legacy effects should have this overridden
 bool Effect::Init()
 {
    return true;
-}
-
-int Effect::GetPass()
-{
-   return mPass;
 }
 
 bool Effect::InitPass1()
@@ -1529,7 +1297,7 @@ bool Effect::ProcessPass()
          count++;
       },
       [&](Track *t) {
-         if (t->IsSyncLockSelected())
+         if (SyncLock::IsSyncLockSelected(t))
             t->SyncLockAdjust(mT1, mT0 + mDuration);
       }
    );
@@ -1993,11 +1761,6 @@ bool Effect::EnablePreview(bool enable)
    return enable;
 }
 
-void Effect::EnableDebug(bool enable)
-{
-   mUIDebug = enable;
-}
-
 void Effect::SetLinearEffectFlag(bool linearEffectFlag)
 {
    mIsLinearEffect = linearEffectFlag;
@@ -2017,7 +1780,7 @@ void Effect::IncludeNotSelectedPreviewTracks(bool includeNotSelected)
 bool Effect::TotalProgress(double frac, const TranslatableString &msg)
 {
    auto updateResult = (mProgress ?
-      mProgress->Update(frac, msg) :
+      mProgress->Poll(frac * 1000, 1000, msg) :
       ProgressResult::Success);
    return (updateResult != ProgressResult::Success);
 }
@@ -2025,7 +1788,7 @@ bool Effect::TotalProgress(double frac, const TranslatableString &msg)
 bool Effect::TrackProgress(int whichTrack, double frac, const TranslatableString &msg)
 {
    auto updateResult = (mProgress ?
-      mProgress->Update(whichTrack + frac, (double) mNumTracks, msg) :
+      mProgress->Poll(whichTrack + frac, (double) mNumTracks, msg) :
       ProgressResult::Success);
    return (updateResult != ProgressResult::Success);
 }
@@ -2033,7 +1796,7 @@ bool Effect::TrackProgress(int whichTrack, double frac, const TranslatableString
 bool Effect::TrackGroupProgress(int whichGroup, double frac, const TranslatableString &msg)
 {
    auto updateResult = (mProgress ?
-      mProgress->Update(whichGroup + frac, (double) mNumGroups, msg) :
+      mProgress->Poll(whichGroup + frac, (double) mNumGroups, msg) :
       ProgressResult::Success);
    return (updateResult != ProgressResult::Success);
 }
@@ -2081,7 +1844,7 @@ void Effect::CopyInputTracks(bool allSyncLockSelected)
    auto trackRange = mTracks->Any() +
       [&] (const Track *pTrack) {
          return allSyncLockSelected
-         ? pTrack->IsSelectedOrSyncLockSelected()
+         ? SyncLock::IsSelectedOrSyncLockSelected(pTrack)
          : track_cast<const WaveTrack*>( pTrack ) && pTrack->GetSelected();
       };
 
@@ -2287,11 +2050,6 @@ double Effect::CalcPreviewInputLength(double previewLength)
    return previewLength;
 }
 
-bool Effect::IsHidden()
-{
-   return false;
-}
-
 void Effect::Preview(bool dryOnly)
 {
    if (mNumTracks == 0) { // nothing to preview
@@ -2388,8 +2146,6 @@ void Effect::Preview(bool dryOnly)
 
       mixLeft->Offset(-mixLeft->GetStartTime());
       mixLeft->SetSelected(true);
-      WaveTrackView::Get( *mixLeft )
-         .SetDisplay(WaveTrackViewConstants::NoDisplay);
       auto pLeft = mTracks->Add( mixLeft );
       Track *pRight{};
       if (mixRight) {
@@ -2404,8 +2160,6 @@ void Effect::Preview(bool dryOnly)
          if (src->GetSelected() || mPreviewWithNotSelected) {
             auto dest = src->Copy(mT0, t1);
             dest->SetSelected(src->GetSelected());
-            WaveTrackView::Get( *static_cast<WaveTrack*>(dest.get()) )
-               .SetDisplay(WaveTrackViewConstants::NoDisplay);
             mTracks->Add( dest );
          }
       }
@@ -2422,12 +2176,13 @@ void Effect::Preview(bool dryOnly)
 
    // Apply effect
    if (!dryOnly) {
-      ProgressDialog progress{
+      using namespace BasicUI;
+      auto progress = MakeProgress(
          GetName(),
          XO("Preparing preview"),
-         pdlgHideCancelButton
-      }; // Have only "Stop" button.
-      auto vr = valueRestorer( mProgress, &progress );
+         ProgressShowStop
+      ); // Have only "Stop" button.
+      auto vr = valueRestorer( mProgress, progress.get() );
 
       auto vr2 = valueRestorer( mIsPreview, true );
 
@@ -2444,8 +2199,7 @@ void Effect::Preview(bool dryOnly)
 
       // Start audio playing
       auto options = DefaultPlayOptions(*pProject);
-      int token =
-         gAudioIO->StartStream(tracks, mT0, t1, options);
+      int token = gAudioIO->StartStream(tracks, mT0, t1, t1, options);
 
       if (token) {
          auto previewing = ProgressResult::Success;
@@ -2457,7 +2211,8 @@ void Effect::Preview(bool dryOnly)
             (GetName(), XO("Previewing"), pdlgHideCancelButton);
 
             while (gAudioIO->IsStreamActive(token) && previewing == ProgressResult::Success) {
-               ::wxMilliSleep(100);
+               using namespace std::chrono;
+               std::this_thread::sleep_for(100ms);
                previewing = progress.Update(gAudioIO->GetStreamTime() - mT0, t1 - mT0);
             }
          }
@@ -2465,7 +2220,8 @@ void Effect::Preview(bool dryOnly)
          gAudioIO->StopStream();
 
          while (gAudioIO->IsBusy()) {
-            ::wxMilliSleep(100);
+            using namespace std::chrono;
+            std::this_thread::sleep_for(100ms);
          }
       }
       else {

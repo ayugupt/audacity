@@ -13,10 +13,14 @@
 
 #include "MemoryX.h"
 #include "Mix.h"
+#include "Observer.h"
 #include <atomic>
 #include <chrono>
 #include <vector>
 
+#include <wx/event.h>
+
+class AudacityProject;
 struct AudioIOStartStreamOptions;
 class BoundedEnvelope;
 using PRCrossfadeData = std::vector< std::vector < float > >;
@@ -172,6 +176,8 @@ struct PlaybackSlice {
  */
 class PlaybackPolicy {
 public:
+   using Duration = std::chrono::duration<double>;
+
    //! @section Called by the main thread
 
    virtual ~PlaybackPolicy() = 0;
@@ -187,9 +193,9 @@ public:
 
    //! Times are in seconds
    struct BufferTimes {
-      double batchSize; //!< Try to put at least this much into the ring buffer in each pass
-      double latency; //!< Try not to let ring buffer contents fall below this
-      double ringBufferDelay; //!< Length of ring buffer in seconds
+      Duration batchSize; //!< Try to put at least this much into the ring buffer in each pass
+      Duration latency; //!< Try not to let ring buffer contents fall below this
+      Duration ringBufferDelay; //!< Length of ring buffer
    };
    //! Provide hints for construction of playback RingBuffer objects
    virtual BufferTimes SuggestedBufferTimes(PlaybackSchedule &schedule);
@@ -316,11 +322,13 @@ struct AUDACITY_DLL_API PlaybackSchedule {
 
       //! @section Called by the AudioIO::TrackBufferExchange thread
 
-      //! Enqueue track time value advanced by `nSamples` according to `schedule`'s PlaybackPolicy
-      void Producer( PlaybackSchedule &schedule, size_t nSamples );
+      //! Enqueue track time value advanced by the slice according to `schedule`'s PlaybackPolicy
+      void Producer( PlaybackSchedule &schedule, PlaybackSlice slice );
 
       //! Return the last time saved by Producer
       double GetLastTime() const;
+
+      void SetLastTime(double time);
 
       //! @section called by PortAudio callback thread
 
@@ -352,14 +360,6 @@ struct AUDACITY_DLL_API PlaybackSchedule {
    PlaybackPolicy &GetPolicy();
    const PlaybackPolicy &GetPolicy() const;
 
-   // The main thread writes changes in response to user events, and
-   // the audio thread later reads, and changes the playback.
-   struct SlotData {
-      double mT0;
-      double mT1;
-   };
-   MessageBuffer<SlotData> mMessageChannel;
-
    void Init(
       double t0, double t1,
       const AudioIOStartStreamOptions &options,
@@ -385,9 +385,6 @@ struct AUDACITY_DLL_API PlaybackSchedule {
     */
    double SolveWarpedLength(double t0, double length) const;
 
-   void MessageProducer( PlayRegionEvent &evt );
-   void MessageConsumer();
-
    /** \brief True if the end time is before the start time */
    bool ReversedTime() const
    {
@@ -406,13 +403,6 @@ struct AUDACITY_DLL_API PlaybackSchedule {
    void SetTrackTime( double time )
    { mTime.store(time, std::memory_order_relaxed); }
 
-   /** \brief Clamps argument to be between mT0 and mT1
-    *
-    * Returns the bound if the value is out of bounds; does not wrap.
-    * Returns a time in seconds.
-    */
-   double ClampTrackTime( double trackTime ) const;
-
    void ResetMode() {
       mPolicyValid.store(false, std::memory_order_release);
    }
@@ -420,6 +410,10 @@ struct AUDACITY_DLL_API PlaybackSchedule {
    // Convert time between mT0 and argument to real duration, according to
    // time track if one is given; result is always nonnegative
    double RealDuration(double trackTime1) const;
+
+   // Convert time between mT0 and argument to real duration, according to
+   // time track if one is given; may be negative
+   double RealDurationSigned(double trackTime1) const;
 
    // How much real time left?
    double RealTimeRemaining() const;
@@ -438,13 +432,25 @@ private:
    std::atomic<bool> mPolicyValid{ false };
 };
 
-class LoopingPlaybackPolicy final : public PlaybackPolicy {
+class NewDefaultPlaybackPolicy final
+   : public PlaybackPolicy
+   , public NonInterferingBase
+   , public wxEvtHandler
+{
 public:
-   ~LoopingPlaybackPolicy() override;
+   NewDefaultPlaybackPolicy( AudacityProject &project,
+      double trackEndTime, double loopEndTime,
+      bool loopEnabled, bool variableSpeed);
+   ~NewDefaultPlaybackPolicy() override;
+
+   void Initialize( PlaybackSchedule &schedule, double rate ) override;
+
+   Mixer::WarpOptions MixerWarpOptions(PlaybackSchedule &schedule) override;
 
    BufferTimes SuggestedBufferTimes(PlaybackSchedule &schedule) override;
 
    bool Done( PlaybackSchedule &schedule, unsigned long ) override;
+
    PlaybackSlice GetPlaybackSlice(
       PlaybackSchedule &schedule, size_t available ) override;
 
@@ -459,7 +465,32 @@ public:
    bool Looping( const PlaybackSchedule & ) const override;
 
 private:
+   bool RevertToOldDefault( const PlaybackSchedule &schedule ) const;
+   void OnPlayRegionChange(Observer::Message);
+   void OnPlaySpeedChange(wxCommandEvent &evt);
+   void WriteMessage();
+   double GetPlaySpeed();
+
+   AudacityProject &mProject;
+
+   // The main thread writes changes in response to user events, and
+   // the audio thread later reads, and changes the playback.
+   struct SlotData {
+      double mPlaySpeed;
+      double mT0;
+      double mT1;
+      bool mLoopEnabled;
+   };
+   MessageBuffer<SlotData> mMessageChannel;
+
+   Observer::Subscription mSubscription;
+
+   double mLastPlaySpeed{ 1.0 };
+   const double mTrackEndTime;
+   double mLoopEndTime;
    size_t mRemaining{ 0 };
    bool mProgress{ true };
+   bool mLoopEnabled{ true };
+   bool mVariableSpeed{ false };
 };
 #endif

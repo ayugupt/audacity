@@ -37,16 +37,16 @@
 #include <wx/slider.h>
 #include <wx/stattext.h>
 
-#include "../AColor.h"
+#include "AColor.h"
 #include "Prefs.h"
 #include "../Shuttle.h"
 #include "../ShuttleGui.h"
-#include "../Theme.h"
+#include "Theme.h"
 #include "float_cast.h"
 #include "../widgets/Ruler.h"
 
 #include "../WaveTrack.h"
-#include "../AllThemeResources.h"
+#include "AllThemeResources.h"
 
 enum
 {
@@ -127,7 +127,7 @@ EffectType EffectCompressor::GetType()
    return EffectTypeProcess;
 }
 
-// EffectClientInterface implementation
+// EffectProcessor implementation
 bool EffectCompressor::DefineParams( ShuttleParams & S ){
    S.SHUTTLE_PARAM( mThresholdDB, Threshold );
    S.SHUTTLE_PARAM( mNoiseFloorDB, NoiseFloor );

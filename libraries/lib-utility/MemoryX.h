@@ -129,134 +129,6 @@ public:
 };
 
 /**
-  \class Optional
-  \brief Like a smart pointer, allows for object to not exist (nullptr)
-  \brief emulating some of std::optional of C++17
-
-  template class Optional<X>
-  Can be used for monomorphic objects that are stack-allocable, but only conditionally constructed.
-  You might also use it as a member.
-  Initialize with emplace(), then use like a smart pointer,
-  with *, ->, reset(), or in if()
- */
-
-template<typename X>
-class Optional {
-public:
-
-   using value_type = X;
-
-   // Construct as NULL
-   Optional() {}
-
-   // Supply the copy and move, so you might use this as a class member too
-   Optional(const Optional &that)
-   {
-      if (that)
-         emplace(*that);
-   }
-
-   Optional& operator= (const Optional &that)
-   {
-      if (this != &that) {
-         if (that)
-            emplace(*that);
-         else
-            reset();
-      }
-      return *this;
-   }
-
-   Optional(Optional &&that)
-   {
-      if (that)
-         emplace(::std::move(*that));
-   }
-
-   Optional& operator= (Optional &&that)
-   {
-      if (this != &that) {
-         if (that)
-            emplace(::std::move(*that));
-         else
-            reset();
-      }
-      return *this;
-   }
-
-   /// Make an object in the buffer, passing constructor arguments,
-   /// but destroying any previous object first
-   /// Note that if constructor throws, we remain in a consistent
-   /// NULL state -- giving exception safety but only weakly
-   /// (previous value was lost if present)
-   template<typename... Args>
-   X& emplace(Args&&... args)
-   {
-      // Lose any old value
-      reset();
-      // emplace NEW value
-      pp = safenew(address()) X(std::forward<Args>(args)...);
-      return **this;
-   }
-
-   // Destroy any object that was built in it
-   ~Optional()
-   {
-      reset();
-   }
-
-   // Pointer-like operators
-
-   /// Dereference, with the usual bad consequences if NULL
-   X &operator* () const
-   {
-      return *pp;
-   }
-
-   X *operator-> () const
-   {
-      return pp;
-   }
-
-   void reset()
-   {
-      if (pp)
-         pp->~X(), pp = nullptr;
-   }
-
-   // So you can say if(ptr)
-   explicit operator bool() const
-   {
-      return pp != nullptr;
-   }
-
-   bool has_value() const
-   {
-      return pp != nullptr;
-   }
-
-private:
-   X* address()
-   {
-      return reinterpret_cast<X*>(&storage);
-   }
-
-   // Data
-#if 0
-   typename ::std::aligned_storage<
-      sizeof(X)
-      // , alignof(X) // Not here yet in all compilers
-   >::type storage{};
-#else
-   union {
-      double d;
-      char storage[sizeof(X)];
-   };
-#endif
-   X* pp{ nullptr };
-};
-
-/**
   A deleter for pointers obtained with malloc
  */
 struct freer { void operator() (void *p) const { free(p); } };
@@ -631,5 +503,75 @@ template< typename T > struct NonInterfering
 #define LINEAR_TO_DB(x) (20.0 * log10(x))
 
 #define MAX_AUDIO (1. - 1./(1<<15))
+
+#include <type_traits>
+#include <variant>
+#include <stdexcept>
+
+//! Help to define Visit() below
+template <typename Visitor, typename Variant>
+struct VisitHelperReturn {
+   using Var = std::remove_reference_t<Variant>;
+   using Alt = std::variant_alternative_t<0, Var>;
+   using QAlt = std::conditional_t<
+      std::is_const_v<Var>, const Alt, Alt >;
+   using Arg = std::conditional_t<std::is_lvalue_reference_v<Variant>,
+      std::add_lvalue_reference_t<QAlt>, std::add_rvalue_reference_t<QAlt>
+   >;
+   // All this just so that the noreturn function below has an appropriate type
+   using type = decltype( std::invoke(
+     std::forward<Visitor>( std::declval<Visitor>() ),
+     std::declval<Arg>() ) );
+};
+
+//! Help to define Visit() below
+template <typename Visitor, typename Variant>
+[[noreturn]] auto VisitHelper(Visitor &&, Variant &&)
+   -> typename VisitHelperReturn<Visitor, Variant>::type
+{
+   // Fall through here when the variant holds no value
+   // Should really throw std::bad_variant_access but that may not be available
+   throw std::invalid_argument{"Bad variant"};
+}
+
+//! Help to define Visit() below
+template <size_t Index, size_t... Indices, typename Visitor, typename Variant>
+auto VisitHelper(Visitor &&vis, Variant &&var)
+{
+   // Invoke vis at most once after no-throw testing for presence of
+   // alternatives in the variant
+   if (const auto pValue = std::get_if<Index>(&var)) {
+      if constexpr (std::is_lvalue_reference_v<Variant>)
+         return std::invoke( std::forward<Visitor>(vis), (*pValue) );
+      else
+         return std::invoke( std::forward<Visitor>(vis), std::move(*pValue) );
+   }
+   // Recur down the index value pack
+   return VisitHelper<Indices...>(
+      std::forward<Visitor>(vis), std::forward<Variant>(var));
+}
+
+//! Help to define Visit() below
+template <size_t... Indices, typename Visitor, typename Variant>
+auto VisitHelper(std::index_sequence<Indices...>, Visitor &&vis, Variant &&var)
+{
+   // Non-template parameters were deduced and are passed on as non-deduced
+   return VisitHelper<Indices...>(
+      std::forward<Visitor>(vis), std::forward<Variant>(var) );
+}
+
+//! Mimic some of std::visit, for the case of one visitor only
+/*! This is necessary because of limitations of the macOS implementation of
+ some of the C++17 standard library without a minimum version of 10.13, and
+ so let's use this even when not needed on the other platforms, instead of having
+ too much conditional compilation
+ */
+template <typename Visitor, typename Variant>
+auto Visit(Visitor &&vis, Variant &&var)
+{
+   constexpr auto size = std::variant_size_v<std::remove_reference_t<Variant>>;
+   return VisitHelper( std::make_index_sequence<size>{},
+      std::forward<Visitor>(vis), std::forward<Variant>(var) );
+}
 
 #endif // __AUDACITY_MEMORY_X_H__

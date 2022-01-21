@@ -102,6 +102,7 @@ It handles initialization and termination by subclassing wxApp.
 #include "Sequence.h"
 #include "SelectFile.h"
 #include "TempDirectory.h"
+#include "LoadThemeResources.h"
 #include "Track.h"
 #include "prefs/PrefsDialog.h"
 #include "Theme.h"
@@ -111,12 +112,13 @@ It handles initialization and termination by subclassing wxApp.
 #include "FFT.h"
 #include "widgets/AudacityMessageBox.h"
 #include "prefs/DirectoriesPrefs.h"
-#include "prefs/GUIPrefs.h"
+#include "prefs/GUISettings.h"
 #include "tracks/ui/Scrubbing.h"
 #include "FileConfig.h"
 #include "widgets/FileHistory.h"
 #include "update/UpdateManager.h"
 #include "widgets/wxWidgetsBasicUI.h"
+#include "LogWindow.h"
 
 #ifdef HAS_NETWORKING
 #include "NetworkManager.h"
@@ -232,7 +234,7 @@ void PopulatePreferences()
       langCode =
          Languages::GetSystemLanguageCode(FileNames::AudacityPathList());
 
-   langCode = GUIPrefs::SetLang( langCode );
+   langCode = GUISettings::SetLang( langCode );
 
    // User requested that the preferences be completely reset
    if (resetPrefs)
@@ -407,6 +409,9 @@ void InitBreakpad()
     
     if(databasePath.DirExists())
     {   
+        const auto sentryRelease = wxString::Format(
+           "audacity@%d.%d.%d", AUDACITY_VERSION, AUDACITY_RELEASE, AUDACITY_REVISION
+        );
         BreakpadConfigurer configurer;
         configurer.SetDatabasePathUTF8(databasePath.GetPath().ToUTF8().data())
             .SetSenderPathUTF8(wxFileName(wxStandardPaths::Get().GetExecutablePath()).GetPath().ToUTF8().data())
@@ -414,7 +419,8 @@ void InitBreakpad()
             .SetReportURL(CRASH_REPORT_URL)
     #endif
             .SetParameters({
-                { "version", wxString(AUDACITY_VERSION_STRING).ToUTF8().data() }
+                { "version", wxString(AUDACITY_VERSION_STRING).ToUTF8().data() },
+                { "sentry[release]",  sentryRelease.ToUTF8().data() }
             })
             .Start();
     }
@@ -490,6 +496,13 @@ static void QuitAudacity(bool bForce)
    CloseScoreAlignDialog();
 #endif
    CloseScreenshotTools();
+
+   // Logger window is always destroyed on macOS,
+   // on other platforms - it prevents the runloop
+   // termination when exiting is requested
+   #if !defined(__WXMAC__)
+   LogWindow::Destroy();
+   #endif
 
    //print out profile if we have one by deleting it
    //temporarily commented out till it is added to all projects
@@ -1327,7 +1340,14 @@ bool AudacityApp::OnInit()
    this->AssociateFileTypes();
 #endif
 
-   theTheme.EnsureInitialised();
+   theTheme.SetOnPreferredSystemAppearanceChanged([this](PreferredSystemAppearance appearance){
+       SetPreferredSystemAppearance(appearance);
+   });
+
+   {
+      wxBusyCursor busy;
+      theTheme.LoadPreferredTheme();
+   }
 
    // AColor depends on theTheme.
    AColor::Init();
@@ -1337,6 +1357,8 @@ bool AudacityApp::OnInit()
       FinishPreferences();
       return false;
    }
+
+   ThemeResources::Load();
 
 #ifdef __WXMAC__
    // Bug2437:  When files are opened from Finder and another instance of
@@ -1392,7 +1414,8 @@ bool AudacityApp::InitPart2()
    ModuleManager::Get().Initialize();
 
    // Initialize the PluginManager
-   PluginManager::Get().Initialize();
+   PluginManager::Get().Initialize( [](const FilePath &localFileName){
+      return AudacityFileConfig::Create({}, {}, localFileName); } );
 
    // Parse command line and handle options that might require
    // immediate exit...no need to initialize all of the audio
@@ -1882,7 +1905,8 @@ bool AudacityApp::CreateSingleInstanceChecker(const wxString &dir)
                return false;
          }
 
-         wxMilliSleep(10);
+         using namespace std::chrono;
+         std::this_thread::sleep_for(10ms);
       }
       // There is another copy of Audacity running.  Force quit.
 
@@ -2417,6 +2441,13 @@ void AudacityApp::OnMenuExit(wxCommandEvent & event)
    event.Skip(AllProjects{}.empty());
 
 }
+
+#ifndef __WXMAC__
+void AudacityApp::SetPreferredSystemAppearance(PreferredSystemAppearance)
+{
+   // Currently this is implemented only on macOS
+}
+#endif
 
 //BG: On Windows, associate the aup file type with Audacity
 /* We do this in the Windows installer now,

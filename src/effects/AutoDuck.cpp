@@ -27,12 +27,12 @@
 #include <wx/dcmemory.h>
 #include <wx/intl.h>
 
-#include "../AColor.h"
-#include "../AllThemeResources.h"
+#include "AColor.h"
+#include "AllThemeResources.h"
 #include "Prefs.h"
 #include "../Shuttle.h"
 #include "../ShuttleGui.h"
-#include "../Theme.h"
+#include "Theme.h"
 #include "../widgets/valnum.h"
 
 #include "../WaveTrack.h"
@@ -130,7 +130,7 @@ EffectType EffectAutoDuck::GetType()
    return EffectTypeProcess;
 }
 
-// EffectClientInterface implementation
+// EffectProcessor implementation
 bool EffectAutoDuck::DefineParams( ShuttleParams & S ){
    S.SHUTTLE_PARAM(  mDuckAmountDb, DuckAmountDb);
    S.SHUTTLE_PARAM(  mInnerFadeDownLen, InnerFadeDownLen);

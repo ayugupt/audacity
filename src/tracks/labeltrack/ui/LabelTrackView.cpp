@@ -17,9 +17,9 @@ Paul Licameli split from TrackPanel.cpp
 
 #include "../../../LabelTrack.h"
 
-#include "../../../AColor.h"
+#include "AColor.h"
 #include "../../../widgets/BasicMenu.h"
-#include "../../../AllThemeResources.h"
+#include "AllThemeResources.h"
 #include "../../../HitTestResult.h"
 #include "Project.h"
 #include "../../../ProjectHistory.h"
@@ -28,7 +28,9 @@ Paul Licameli split from TrackPanel.cpp
 #include "../../../ProjectWindow.h"
 #include "../../../ProjectWindows.h"
 #include "../../../RefreshCode.h"
-#include "../../../Theme.h"
+#include "../../../SyncLock.h"
+#include "Theme.h"
+#include "../../../TrackArt.h"
 #include "../../../TrackArtist.h"
 #include "../../../TrackPanelAx.h"
 #include "../../../TrackPanel.h"
@@ -803,7 +805,7 @@ void LabelTrackView::Draw
 
    TrackArt::DrawBackgroundWithSelection( context, r, pTrack.get(),
       AColor::labelSelectedBrush, AColor::labelUnselectedBrush,
-      ( pTrack->GetSelected() || pTrack->IsSyncLockSelected() ) );
+      SyncLock::IsSelectedOrSyncLockSelected(pTrack.get()) );
 
    wxCoord textWidth, textHeight;
 
@@ -1197,6 +1199,23 @@ bool LabelTrackView::PasteSelectedText(
    return true;
 }
 
+bool LabelTrackView::SelectAllText(AudacityProject& project)
+{
+    if (!IsValidIndex(mTextEditIndex, project))
+        return false;
+
+    const auto pTrack = FindLabelTrack();
+
+    const auto& mLabels = pTrack->GetLabels();
+    auto labelStruct = mLabels[mTextEditIndex];
+    auto& title = labelStruct.title;
+
+    mInitialCursorPos = 0;
+    mCurrentCursorPos = title.Length();
+
+    return true;
+}
+
 /// @return true if the text data is available in the clipboard, false otherwise
 bool LabelTrackView::IsTextClipSupported()
 {
@@ -1338,21 +1357,28 @@ static bool IsGoodLabelEditKey(const wxKeyEvent & evt)
 bool LabelTrackView::DoCaptureKey(
    AudacityProject &project, wxKeyEvent & event )
 {
-   // Check for modifiers and only allow shift
    int mods = event.GetModifiers();
+   auto code = event.GetKeyCode();
+   const auto pTrack = FindLabelTrack();
+   const auto& mLabels = pTrack->GetLabels();
+
+   // Allow hardcoded Ctrl+F2 for renaming the selected label,
+   // if we have any labels
+   if (code == WXK_F2 && mods == wxMOD_CONTROL && !mLabels.empty()) {
+      return true;
+   }
+
+   // Check for modifiers and only allow shift
    if (mods != wxMOD_NONE && mods != wxMOD_SHIFT) {
       return false;
    }
 
    // Always capture the navigation keys, if we have any labels
-   auto code = event.GetKeyCode();
-   const auto pTrack = FindLabelTrack();
-   const auto &mLabels = pTrack->GetLabels();
    if ((code == WXK_TAB || code == WXK_NUMPAD_TAB) &&
        !mLabels.empty())
       return true;
 
-   if (IsValidIndex(mTextEditIndex, project) || IsValidIndex(mNavigationIndex, project)) {
+   if (IsValidIndex(mTextEditIndex, project)) {
       if (IsGoodLabelEditKey(event)) {
          return true;
       }
@@ -1500,7 +1526,10 @@ bool LabelTrackView::DoKeyDown(
    const int mods = event.GetModifiers();
 
    // Check for modifiers and only allow shift
-   if (mods != wxMOD_NONE && mods != wxMOD_SHIFT) {
+   // except in the case of Ctrl + F2, so hardcoded Ctrl+F2 can
+   // be used for renaming a label
+   if ((keyCode != WXK_F2 && mods != wxMOD_NONE && mods != wxMOD_SHIFT)
+      || (keyCode == WXK_F2 && mods != wxMOD_CONTROL)) {
       event.Skip();
       return updated;
    }
@@ -1610,32 +1639,41 @@ bool LabelTrackView::DoKeyDown(
       case WXK_LEFT:
       case WXK_NUMPAD_LEFT:
          // Moving cursor left
-         while ((mCurrentCursorPos > 0) && more) {
-            wchar = title.at( mCurrentCursorPos-1 );
-            more = !( ((int)wchar > 0xDFFF) || ((int)wchar <0xDC00));
+         if (mods != wxMOD_SHIFT && mCurrentCursorPos != mInitialCursorPos)
+            //put cursor to the left edge of selection
+            mInitialCursorPos = mCurrentCursorPos =
+               std::min(mInitialCursorPos, mCurrentCursorPos);
+         else
+         {
+            while ((mCurrentCursorPos > 0) && more) {
+               wchar = title.at(mCurrentCursorPos - 1);
+               more = !(((int)wchar > 0xDFFF) || ((int)wchar < 0xDC00));
 
-            mCurrentCursorPos--;
-            if (mods == wxMOD_SHIFT)
-               ;
-            else
-               mInitialCursorPos = mCurrentCursorPos =
-                  std::min(mInitialCursorPos, mCurrentCursorPos);
+               --mCurrentCursorPos;
+            }
+            if (mods != wxMOD_SHIFT)
+               mInitialCursorPos = mCurrentCursorPos;
          }
+         
          break;
 
       case WXK_RIGHT:
       case WXK_NUMPAD_RIGHT:
          // Moving cursor right
-         while ((mCurrentCursorPos < (int)title.length())&& more) {
-            wchar = title.at( mCurrentCursorPos );
-            more = !( ((int)wchar > 0xDBFF) || ((int)wchar <0xD800));
+         if(mods != wxMOD_SHIFT && mCurrentCursorPos != mInitialCursorPos)
+            //put cursor to the right edge of selection
+            mInitialCursorPos = mCurrentCursorPos =
+               std::max(mInitialCursorPos, mCurrentCursorPos);
+         else
+         {
+            while ((mCurrentCursorPos < (int)title.length()) && more) {
+               wchar = title.at(mCurrentCursorPos);
+               more = !(((int)wchar > 0xDBFF) || ((int)wchar < 0xD800));
 
-            mCurrentCursorPos++;
-            if (mods == wxMOD_SHIFT)
-               ;
-            else
-               mInitialCursorPos = mCurrentCursorPos =
-                  std::max(mInitialCursorPos, mCurrentCursorPos);
+               ++mCurrentCursorPos;
+            }
+            if (mods != wxMOD_SHIFT)
+               mInitialCursorPos = mCurrentCursorPos;
          }
          break;
 
@@ -1731,6 +1769,7 @@ bool LabelTrackView::DoKeyDown(
                mInitialCursorPos = mCurrentCursorPos;
                //Set the selection region to be equal to the selection bounds of the tabbed-to label.
                newSel = labelStruct.selectedRegion;
+               ProjectWindow::Get(project).ScrollIntoView(labelStruct.selectedRegion.t0());
                // message for screen reader
                /* i18n-hint:
                   String is replaced by the name of a label,
@@ -1747,10 +1786,9 @@ bool LabelTrackView::DoKeyDown(
             }
          }
          break;
-      case WXK_RETURN:
-      case WXK_NUMPAD_ENTER:
-         //pressing Enter key activates editing of the label
-         //pointed to by mNavigationIndex (if valid)
+      case WXK_F2:     // Must be Ctrl + F2 to have reached here
+         // Hardcoded Ctrl+F2 activates editing of the label
+         // pointed to by mNavigationIndex (if valid)
          if (IsValidIndex(mNavigationIndex, project)) {
              SetTextSelection(mNavigationIndex);
          }
@@ -2278,9 +2316,8 @@ int LabelTrackView::DialogForLabelName(
       trackPanel.FindTrackRect( trackFocus.Get() ).GetBottomLeft();
    // The start of the text in the text box will be roughly in line with the label's position
    // if it's a point label, or the start of its region if it's a region label.
-   position.x +=
-      + std::max(0, static_cast<int>(viewInfo.TimeToPosition(
-         viewInfo.GetLeftOffset(), region.t0())))
+   position.x += viewInfo.GetLeftOffset()
+      + std::max(0, static_cast<int>(viewInfo.TimeToPosition(region.t0())))
       - 39;
    position.y += 2;  // just below the bottom of the track
    position = trackPanel.ClientToScreen(position);
@@ -2326,4 +2363,10 @@ std::shared_ptr<TrackVRulerControls> LabelTrackView::DoGetVRulerControls()
 {
    return
       std::make_shared<LabelTrackVRulerControls>( shared_from_this() );
+}
+
+using GetLabelTrackSyncLockPolicy =
+   GetSyncLockPolicy::Override< const LabelTrack >;
+DEFINE_ATTACHED_VIRTUAL_OVERRIDE(GetLabelTrackSyncLockPolicy) {
+   return [](auto &) { return SyncLockPolicy::EndSeparator; };
 }

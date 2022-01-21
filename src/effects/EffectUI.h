@@ -7,7 +7,7 @@
   Leland Lucius
 
   Audacity(R) is copyright (c) 1999-2008 Audacity Team.
-  License: GPL v2.  See License.txt.
+  License: GPL v2 or later.  See License.txt.
 
 **********************************************************************/
 
@@ -17,7 +17,11 @@
 #include <wx/bitmap.h> // member variables
 
 #include "Identifier.h"
+#include "EffectHostInterface.h"
+#include "Observer.h"
 #include "PluginInterface.h"
+
+struct AudioIOEvent;
 
 #if defined(EXPERIMENTAL_EFFECTS_RACK)
 
@@ -117,19 +121,14 @@ class Effect;
 class wxCheckBox;
 
 //
-class EffectUIHost final : public wxDialogWrapper,
-                     public EffectUIHostInterface
+class EffectUIHost final : public wxDialogWrapper
 {
 public:
    // constructors and destructors
    EffectUIHost(wxWindow *parent,
                 AudacityProject &project,
-                Effect *effect,
-                EffectUIClientInterface *client);
-   EffectUIHost(wxWindow *parent,
-                AudacityProject &project,
-                AudacityCommand *command,
-                EffectUIClientInterface *client);
+                Effect &effect,
+                EffectUIClientInterface &client);
    virtual ~EffectUIHost();
 
    bool TransferDataToWindow() override;
@@ -156,8 +155,8 @@ private:
    void OnPlay(wxCommandEvent & evt);
    void OnRewind(wxCommandEvent & evt);
    void OnFFwd(wxCommandEvent & evt);
-   void OnPlayback(wxCommandEvent & evt);
-   void OnCapture(wxCommandEvent & evt);
+   void OnPlayback(AudioIOEvent);
+   void OnCapture(AudioIOEvent);
    void OnUserPreset(wxCommandEvent & evt);
    void OnFactoryPreset(wxCommandEvent & evt);
    void OnDeletePreset(wxCommandEvent & evt);
@@ -176,11 +175,12 @@ private:
    void Resume();
 
 private:
+   Observer::Subscription mSubscription;
+
    AudacityProject *mProject;
    wxWindow *mParent;
-   Effect *mEffect;
-   AudacityCommand * mCommand;
-   EffectUIClientInterface *mClient;
+   Effect &mEffect;
+   EffectUIClientInterface &mClient;
 
    RegistryPaths mUserPresets;
    bool mInitialized;
@@ -216,6 +216,11 @@ private:
    bool mDismissed{};
    bool mNeedsResume{};
 
+#if wxDEBUG_LEVEL
+   // Used only in an assertion
+   bool mClosed{ false };
+#endif
+
    DECLARE_EVENT_TABLE()
 };
 
@@ -224,8 +229,8 @@ class CommandContext;
 namespace  EffectUI {
 
    AUDACITY_DLL_API
-   wxDialog *DialogFactory( wxWindow &parent, EffectHostInterface *pHost,
-      EffectUIClientInterface *client);
+   wxDialog *DialogFactory( wxWindow &parent, EffectHostInterface &host,
+      EffectUIClientInterface &client);
 
    /** Run an effect given the plugin ID */
    // Returns true on success.  Will only operate on tracks that

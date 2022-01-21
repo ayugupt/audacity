@@ -9,7 +9,7 @@
 *******************************************************************//**
 
 \class FrequencyPlotDialog
-\brief Displays a spectrum plot of the waveform.  Has options for
+\brief Displays a spectrum plot of the waveform. Has options for
 selecting parameters of the plot.
 
 Has a feature that finds peaks and reports their value as you move
@@ -18,7 +18,7 @@ the mouse around.
 *//****************************************************************//**
 
 \class FreqPlot
-\brief Works with FrequencyPlotDialog to dsplay a spectrum plot of the waveform.
+\brief Works with FrequencyPlotDialog to display a spectrum plot of the waveform.
 This class actually does the graph display.
 
 Has a feature that finds peaks and reports their value as you move
@@ -30,8 +30,6 @@ the mouse around.
   Salvo Ventura - November 2006
   Extended range check for additional FFT windows
 */
-
-
 
 #include "FreqWindow.h"
 
@@ -85,6 +83,7 @@ the mouse around.
 #include "./widgets/HelpSystem.h"
 #include "widgets/AudacityMessageBox.h"
 #include "widgets/Ruler.h"
+#include "widgets/VetoDialogHook.h"
 
 #if wxUSE_ACCESSIBILITY
 #include "widgets/WindowAccessible.h"
@@ -113,7 +112,6 @@ enum {
 #define FREQ_WINDOW_WIDTH 480
 #define FREQ_WINDOW_HEIGHT 330
 
-
 static const char * ZoomIn[] = {
 "16 16 6 1",
 " 	c None",
@@ -138,7 +136,6 @@ static const char * ZoomIn[] = {
 "+++@@           ",
 "@+@@            ",
 " @@             "};
-
 
 static const char * ZoomOut[] = {
 "16 16 6 1",
@@ -190,8 +187,8 @@ FrequencyPlotDialog::FrequencyPlotDialog(wxWindow * parent, wxWindowID id,
                            const wxPoint & pos)
 :  wxDialogWrapper(parent, id, title, pos, wxDefaultSize,
             wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER | wxMAXIMIZE_BOX),
-   mAnalyst(std::make_unique<SpectrumAnalyst>())
-,  mProject{ &project }
+   mProject{ &project }
+,  mAnalyst(std::make_unique<SpectrumAnalyst>())
 {
    SetName();
 
@@ -243,6 +240,7 @@ void FrequencyPlotDialog::Populate()
       Verbatim( "16384" ) ,
       Verbatim( "32768" ) ,
       Verbatim( "65536" ) ,
+      Verbatim( "131072" ) ,
    };
 
    TranslatableStrings funcChoices;
@@ -400,6 +398,7 @@ void FrequencyPlotDialog::Populate()
       // -------------------------------------------------------------------
       // ROW 3: Spacer
       // -------------------------------------------------------------------
+
       S.AddSpace(5);
       S.AddSpace(5);
       S.AddSpace(5);
@@ -469,7 +468,6 @@ void FrequencyPlotDialog::Populate()
       mExportButton = S.Id(FreqExportButtonID).AddButton(XXO("&Export..."));
 
       S.AddSpace(5);
-
 
       // ----------------------------------------------------------------
       // ROW 7: Function, Axix, Grids, Close
@@ -551,7 +549,7 @@ void FrequencyPlotDialog::OnGetURL(wxCommandEvent & WXUNUSED(event))
 {
    // Original help page is back on-line (March 2016), but the manual should be more reliable.
    // http://www.eramp.com/WCAG_2_audio_contrast_tool_help.htm
-   HelpSystem::ShowHelp(this, L"Plot Spectrum");
+   HelpSystem::ShowHelp(this, L"Plot_Spectrum");
 }
 
 bool FrequencyPlotDialog::Show(bool show)
@@ -594,13 +592,16 @@ void FrequencyPlotDialog::GetAudio()
          auto start = track->TimeToLongSamples(selectedRegion.t0());
          auto end = track->TimeToLongSamples(selectedRegion.t1());
          auto dataLen = end - start;
-         if (dataLen > 10485760) {
+         // Permit approximately 46.60 minutes of selected samples at
+         // a sampling frequency of 48 kHz (11.65 minutes at 192 kHz).
+         auto maxDataLen = size_t(2) << 26;
+         if (dataLen > maxDataLen) {
             warning = true;
-            mDataLen = 10485760;
+            mDataLen = maxDataLen;
          }
-         else
-            // dataLen is not more than 10 * 2 ^ 20
+         else {
             mDataLen = dataLen.as_size_t();
+         }
          mData = Floats{ mDataLen };
          // Don't allow throw for bad reads
          track->GetFloats(mData.get(), start, mDataLen,
@@ -998,6 +999,7 @@ void FrequencyPlotDialog::OnCloseButton(wxCommandEvent & WXUNUSED(event))
    gPrefs->Write(wxT("/FrequencyPlotDialog/FuncChoice"), mFuncChoice->GetSelection());
    gPrefs->Write(wxT("/FrequencyPlotDialog/AxisChoice"), mAxisChoice->GetSelection());
    gPrefs->Flush();
+   mData.reset();
    Show(false);
 }
 
@@ -1024,7 +1026,7 @@ void FrequencyPlotDialog::Recalc()
    // controls while the plot was being recalculated.  This doesn't appear to be necessary
    // so just use the top level window instead.
    {
-      Optional<wxWindowDisabler> blocker;
+      std::optional<wxWindowDisabler> blocker;
       if (IsShown())
          blocker.emplace(this);
       wxYieldIfNeeded();
@@ -1195,7 +1197,6 @@ void FreqPlot::OnMouseEvent(wxMouseEvent & event)
 // Remaining code hooks this add-on into the application
 #include "commands/CommandContext.h"
 #include "commands/CommandManager.h"
-#include "commands/ScreenshotCommand.h"
 #include "ProjectWindows.h"
 
 namespace {
@@ -1219,7 +1220,7 @@ struct Handler : CommandHandlerObject {
       auto freqWindow = &GetAttachedWindows(project)
          .Get< FrequencyPlotDialog >( sFrequencyWindowKey );
 
-      if( ScreenshotCommand::MayCapture( freqWindow ) )
+      if( ::CallVetoDialogHook( freqWindow ) )
          return;
       freqWindow->Show(true);
       freqWindow->Raise();

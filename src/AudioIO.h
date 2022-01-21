@@ -24,8 +24,7 @@
 #include <utility>
 #include <wx/atomic.h> // member variable
 
-#include <wx/event.h> // to declare custom event types
-
+#include "Observer.h"
 #include "SampleCount.h"
 #include "SampleFormat.h"
 
@@ -36,7 +35,6 @@ class RingBuffer;
 class Mixer;
 class Resample;
 class AudioThread;
-class PlayRegionEvent;
 
 class AudacityProject;
 
@@ -54,12 +52,19 @@ typedef int PaError;
 
 bool ValidateDeviceNames();
 
-wxDECLARE_EXPORTED_EVENT(AUDACITY_DLL_API,
-                         EVT_AUDIOIO_PLAYBACK, wxCommandEvent);
-wxDECLARE_EXPORTED_EVENT(AUDACITY_DLL_API,
-                         EVT_AUDIOIO_CAPTURE, wxCommandEvent);
-wxDECLARE_EXPORTED_EVENT(AUDACITY_DLL_API,
-                         EVT_AUDIOIO_MONITOR, wxCommandEvent);
+/*!
+ Emitted by the global AudioIO object when play, recording, or monitoring
+ starts or stops
+*/
+struct AudioIOEvent {
+   AudacityProject *pProject;
+   enum Type {
+      PLAYBACK,
+      CAPTURE,
+      MONITOR,
+   } type;
+   bool on;
+};
 
 struct TransportTracks {
    WaveTrackArray playbackTracks;
@@ -256,13 +261,15 @@ public:
    WaveTrackArray      mPlaybackTracks;
 
    std::vector<std::unique_ptr<Mixer>> mPlaybackMixers;
+
+   float               mMixerOutputVol { 1.0 };
    static int          mNextStreamToken;
    double              mFactor;
    unsigned long       mMaxFramesOutput; // The actual number of frames output.
    bool                mbMicroFades; 
 
    double              mSeek;
-   double              mPlaybackRingBufferSecs;
+   PlaybackPolicy::Duration mPlaybackRingBufferSecs;
    double              mCaptureRingBufferSecs;
 
    /// Preferred batch size for replenishing the playback RingBuffer
@@ -351,6 +358,7 @@ struct PaStreamInfo;
 
 class AUDACITY_DLL_API AudioIO final
    : public AudioIoCallback
+   , public Observer::Publisher<AudioIOEvent>
 {
 
    AudioIO();
@@ -377,8 +385,9 @@ public:
     * instance.  For use with IsStreamActive() */
 
    int StartStream(const TransportTracks &tracks,
-                   double t0, double t1,
-                   const AudioIOStartStreamOptions &options);
+      double t0, double t1,
+      double mixerLimit, //!< Time at which mixer stops producing, maybe > t1
+      const AudioIOStartStreamOptions &options);
 
    /** \brief Stop recording, playback or input monitoring.
     *
@@ -423,14 +432,6 @@ public:
     * disable the UI if it doesn't work.
     */
    bool InputMixerWorks();
-
-   /** @brief Find out if the output level control is being emulated via software attenuation
-    *
-    * Checks the mEmulateMixerOutputVol variable, which is set up in
-    * AudioIOBase::HandleDeviceChange(). External classes care, because we want to
-    * modify the UI if it doesn't work.
-    */
-   bool OutputMixerEmulated();
 
    /** \brief Get the list of inputs to the current mixer device
     *
@@ -518,7 +519,6 @@ private:
 
    void SetOwningProject( const std::shared_ptr<AudacityProject> &pProject );
    void ResetOwningProject();
-   static void LoopPlayUpdate( PlayRegionEvent &evt );
 
    /*!
     Called in a loop from another worker thread that does not have the low-latency constraints
@@ -565,6 +565,7 @@ private:
 
    std::mutex mPostRecordingActionMutex;
    PostRecordingAction mPostRecordingAction;
+
    bool mDelayingActions{ false };
 };
 

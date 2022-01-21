@@ -40,6 +40,7 @@ from the project that will own the track.
 #include <float.h>
 #include <math.h>
 #include <algorithm>
+#include <optional>
 
 #include "float_cast.h"
 
@@ -51,17 +52,14 @@ from the project that will own the track.
 
 #include "Prefs.h"
 
-#include "effects/TimeWarper.h"
+#include "TimeWarper.h"
 #include "QualitySettings.h"
 #include "prefs/SpectrogramSettings.h"
-#include "prefs/TracksPrefs.h"
-#include "prefs/TracksBehaviorsPrefs.h"
 #include "prefs/WaveformSettings.h"
 
 #include "InconsistencyException.h"
 
-#include "tracks/ui/TrackView.h"
-#include "tracks/ui/TrackControls.h"
+#include "ProjectFormatExtensionsRegistry.h"
 
 using std::max;
 
@@ -97,21 +95,31 @@ Track::LinkType ToLinkType(int value)
 
 }
 
+static auto DefaultName = XO("Audio Track");
+
+wxString WaveTrack::GetDefaultAudioTrackNamePreference()
+{
+   const auto name = AudioTrackNameSetting.ReadWithDefault(L"");
+
+   if (name.empty() || ( name == DefaultName.MSGID() ))
+      // When nothing was specified,
+      // the default-default is whatever translation of...
+      /* i18n-hint: The default name for an audio track. */
+      return DefaultName.Translation();
+   else
+      return name;
+}
+
 static ProjectFileIORegistry::ObjectReaderEntry readerEntry{
-   wxT( "wavetrack" ),
-   []( AudacityProject &project ){
-      auto &trackFactory = WaveTrackFactory::Get( project );
-      auto &tracks = TrackList::Get( project );
-      auto result = tracks.Add(trackFactory.NewWaveTrack());
-      TrackView::Get( *result );
-      TrackControls::Get( *result );
-      return result;
-   }
+   "wavetrack",
+   WaveTrack::New
 };
 
 WaveTrack::Holder WaveTrackFactory::DuplicateWaveTrack(const WaveTrack &orig)
 {
-   return std::static_pointer_cast<WaveTrack>( orig.Duplicate() );
+   auto waveTrack = std::static_pointer_cast<WaveTrack>( orig.Duplicate() );
+
+   return waveTrack;
 }
 
 
@@ -121,12 +129,24 @@ WaveTrack::Holder WaveTrackFactory::NewWaveTrack(sampleFormat format, double rat
       format = QualitySettings::SampleFormatChoice();
    if (rate == 0)
       rate = mRate.GetRate();
-   return std::make_shared<WaveTrack> ( mpFactory, format, rate );
+
+   auto waveTrack = std::make_shared<WaveTrack> ( mpFactory, format, rate );
+
+   return waveTrack;
+}
+
+WaveTrack *WaveTrack::New( AudacityProject &project )
+{
+   auto &trackFactory = WaveTrackFactory::Get( project );
+   auto &tracks = TrackList::Get( project );
+   auto result = tracks.Add(trackFactory.NewWaveTrack());
+   result->AttachedTrackObjects::BuildAll();
+   return result;
 }
 
 WaveTrack::WaveTrack( const SampleBlockFactoryPtr &pFactory,
    sampleFormat format, double rate )
-   : PlayableTrack()
+   : WritableSampleTrack()
    , mpFactory(pFactory)
 {
    mLegacyProjectFileOffset = 0;
@@ -138,7 +158,7 @@ WaveTrack::WaveTrack( const SampleBlockFactoryPtr &pFactory,
    mOldGain[0] = 0.0;
    mOldGain[1] = 0.0;
    mWaveColorIndex = 0;
-   SetDefaultName(TracksPrefs::GetDefaultAudioTrackNamePreference());
+   SetDefaultName(GetDefaultAudioTrackNamePreference());
    SetName(GetDefaultName());
    mDisplayMin = -1.0;
    mDisplayMax = 1.0;
@@ -147,8 +167,8 @@ WaveTrack::WaveTrack( const SampleBlockFactoryPtr &pFactory,
    mLastdBRange = -1;
 }
 
-WaveTrack::WaveTrack(const WaveTrack &orig):
-   PlayableTrack(orig)
+WaveTrack::WaveTrack(const WaveTrack &orig)
+   : WritableSampleTrack(orig)
    , mpFactory( orig.mpFactory )
    , mpSpectrumSettings(orig.mpSpectrumSettings
       ? std::make_unique<SpectrogramSettings>(*orig.mpSpectrumSettings)
@@ -174,7 +194,7 @@ WaveTrack::WaveTrack(const WaveTrack &orig):
 // Copy the track metadata but not the contents.
 void WaveTrack::Init(const WaveTrack &orig)
 {
-   PlayableTrack::Init(orig);
+   WritableSampleTrack::Init(orig);
    mpFactory = orig.mpFactory;
    
    mFormat = orig.mFormat;
@@ -227,7 +247,7 @@ void WaveTrack::Merge(const Track &orig)
       SetWaveformSettings
          (wt.mpWaveformSettings ? std::make_unique<WaveformSettings>(*wt.mpWaveformSettings) : nullptr);
    });
-   PlayableTrack::Merge(orig);
+   WritableSampleTrack::Merge(orig);
 }
 
 WaveTrack::~WaveTrack()
@@ -277,7 +297,7 @@ void WaveTrack::SetPanFromChannelType()
 
 bool WaveTrack::LinkConsistencyCheck()
 {
-   auto err = PlayableTrack::LinkConsistencyCheck();
+   auto err = WritableSampleTrack::LinkConsistencyCheck();
 
    auto linkType = GetLinkType();
    if (static_cast<int>(linkType) == 1 || //Comes from old audacity version
@@ -306,6 +326,24 @@ bool WaveTrack::LinkConsistencyCheck()
    return !err;
 }
 
+
+static const Track::TypeInfo &typeInfo()
+{
+   static const Track::TypeInfo info{
+      { "wave", "wave", XO("Wave Track") },
+      true, &WritableSampleTrack::ClassTypeInfo() };
+   return info;
+}
+
+auto WaveTrack::GetTypeInfo() const -> const TypeInfo &
+{
+   return typeInfo();
+}
+
+auto WaveTrack::ClassTypeInfo() -> const TypeInfo &
+{
+   return typeInfo();
+}
 
 void WaveTrack::SetLastScaleType() const
 {
@@ -829,6 +867,34 @@ void WaveTrack::SetWaveformSettings(std::unique_ptr<WaveformSettings> &&pSetting
    }
 }
 
+namespace {
+   
+   //Internal structure, which is supposed to contain
+   //data related to clip boundaries, and used during 
+   //ClearAndPaste to restore old splits after new
+   //data is pasted
+   struct SplitInfo
+   {
+      //Time, where boundary is located
+      double time;
+      //Contains trimmed data, which should be re-appended to
+      //the clip to the left from the boundary, may be null
+      std::shared_ptr<WaveClip> left;
+      //Contains trimmed data, which should be re-appended to
+      //the clip to the right from the boundary, may be null
+      std::shared_ptr<WaveClip> right;
+      //Contains clip name next to the left from the boundary,
+      //if present, that needs to be re-assigned to the matching
+      //clip after split
+      std::optional<wxString> leftClipName;
+      //Contains clip name next to the right from the boundary,
+      //if present, that needs to be re-assigned to the matching
+      //clip after split
+      std::optional<wxString> rightClipName;
+   };
+
+}
+
 //
 // ClearAndPaste() is a specialized version of HandleClear()
 // followed by Paste() and is used mostly by effects that
@@ -836,8 +902,11 @@ void WaveTrack::SetWaveformSettings(std::unique_ptr<WaveformSettings> &&pSetting
 //
 // HandleClear() removes any cut/split lines with the
 // cleared range, but, in most cases, effects want to preserve
-// the existing cut/split lines, so they are saved before the
-// HandleClear()/Paste() and restored after.
+// the existing cut/split lines, trimmed data and clip names,
+// so they are saved before the HandleClear()/Paste() and restored after.
+// When pasted track has split lines with hidden data at same places 
+// as the target one, then only targets hidden data is preserved, and
+// hidden data from pasted track is discarded.
 //
 // If the pasted track overlaps two or more clips, then it will
 // be pasted with visible split lines.  Normally, effects do not
@@ -862,8 +931,22 @@ void WaveTrack::ClearAndPaste(double t0, // Start of time to clear
       return;
    }
 
-   std::vector<double> splits;
+   std::vector<SplitInfo> splits;
    WaveClipHolders cuts;
+
+   //helper routine, that finds SplitInfo by time value,
+   //or creates a new one if no one exists yet
+   auto get_split = [&](double time) {
+      auto it = std::find_if(splits.begin(), splits.end(), [time](const SplitInfo& split) {
+         return split.time == time;
+      });
+      if(it == splits.end())
+         it = splits.insert(
+            splits.end(),
+            { time, nullptr, nullptr, std::nullopt, std::nullopt }
+         );
+      return it;
+   };
 
    // If provided time warper was NULL, use a default one that does nothing
    IdentityTimeWarper localWarper;
@@ -880,14 +963,22 @@ void WaveTrack::ClearAndPaste(double t0, // Start of time to clear
       double st;
 
       // Remember clip boundaries as locations to split
+      // we need to copy clips, trims and names, because the original ones
+      // could be changed later during Clear/Paste routines
       st = LongSamplesToTime(TimeToLongSamples(clip->GetPlayStartTime()));
-      if (st >= t0 && st <= t1 && !make_iterator_range(splits).contains(st)) {
-         splits.push_back(st);
+      if (st >= t0 && st <= t1) {
+         auto it = get_split(st);
+         if (clip->GetTrimLeft() != 0)
+            it->right = std::make_shared<WaveClip>(*clip, mpFactory, false, clip->GetSequenceStartTime(), st);
+         it->rightClipName = clip->GetName();
       }
 
       st = LongSamplesToTime(TimeToLongSamples(clip->GetPlayEndTime()));
-      if (st >= t0 && st <= t1 && !make_iterator_range(splits).contains(st)) {
-         splits.push_back(st);
+      if (st >= t0 && st <= t1) {
+         auto it = get_split(st);
+         if (clip->GetTrimRight() != 0)
+            it->left = std::make_shared<WaveClip>(*clip, mpFactory, false, st, clip->GetSequenceEndTime());
+         it->leftClipName = clip->GetName();
       }
 
       // Search for cut lines
@@ -974,9 +1065,73 @@ void WaveTrack::ClearAndPaste(double t0, // Start of time to clear
       // Restore cut/split lines
       if (preserve) {
 
-         // Restore the split lines, transforming the position appropriately
-         for (const auto split: splits) {
-            SplitAt(warper->Warp(split));
+         auto attachLeft = [](WaveClip* target, WaveClip* src) 
+         {
+            wxASSERT(target->GetTrimLeft() == 0);
+            if (target->GetTrimLeft() != 0)
+               return;
+
+            auto trim = src->GetPlayEndTime() - src->GetPlayStartTime();
+            target->Paste(target->GetPlayStartTime(), src);
+            target->SetTrimLeft(trim);
+            //Play start time needs to be ajusted after 
+            //prepending data to the sequence
+            target->Offset(-trim);
+         };
+
+         auto attachRight = [](WaveClip* target, WaveClip* src)
+         {
+            wxASSERT(target->GetTrimRight() == 0);
+            if (target->GetTrimRight() != 0)
+               return;
+            
+            auto trim = src->GetPlayEndTime() - src->GetPlayStartTime();
+            target->Paste(target->GetPlayEndTime(), src);
+            target->SetTrimRight(trim);
+         };
+
+         // Restore the split lines and trims, transforming the position appropriately
+         for (const auto& split: splits) {
+            auto at = LongSamplesToTime(TimeToLongSamples(warper->Warp(split.time)));
+            for (const auto& clip : GetClips())
+            {
+               if (clip->WithinPlayRegion(at))//strictly inside
+               {
+                  auto newClip = std::make_unique<WaveClip>(*clip, mpFactory, true);
+
+                  clip->ClearRight(at);
+                  newClip->ClearLeft(at);
+                  if (split.left)
+                     attachRight(clip.get(), split.left.get());
+                  if (split.right)
+                     attachLeft(newClip.get(), split.right.get());
+                  AddClip(std::move(newClip));
+                  break;
+               }
+               else if (clip->GetPlayStartSample() == TimeToLongSamples(at) && split.right)
+               {
+                  attachLeft(clip.get(), split.right.get());
+                  break;
+               }
+               else if (clip->GetPlayEndSample() == TimeToLongSamples(at) && split.left)
+               {
+                  attachRight(clip.get(), split.left.get());
+                  break;
+               }
+            }
+         }
+
+         //Restore clip names
+         for (const auto& split : splits)
+         {
+            auto s = TimeToLongSamples(warper->Warp(split.time));
+            for (auto& clip : GetClips())
+            {
+               if (split.rightClipName.has_value() && clip->GetPlayStartSample() == s)
+                  clip->SetName(*split.rightClipName);
+               else if (split.leftClipName.has_value() && clip->GetPlayEndSample() == s)
+                  clip->SetName(*split.leftClipName);
+            }
          }
 
          // Restore the saved cut lines, also transforming if time altered
@@ -1491,8 +1646,6 @@ void WaveTrack::Disjoin(double t0, double t1)
    Floats buffer{ maxAtOnce };
    Regions regions;
 
-   wxBusyCursor busy;
-
    for (const auto &clip : mClips)
    {
       double startTime = clip->GetPlayStartTime();
@@ -1501,17 +1654,12 @@ void WaveTrack::Disjoin(double t0, double t1)
       if( endTime < t0 || startTime > t1 )
          continue;
 
-      if( t0 > startTime )
-         startTime = t0;
-      if( t1 < endTime )
-         endTime = t1;
-
       //simply look for a sequence of zeroes and if the sequence
       //is greater than minimum number, split-DELETE the region
 
       sampleCount seqStart = -1;
-      auto start = clip->TimeToSequenceSamples(startTime);
-      auto end = clip->TimeToSequenceSamples(endTime);
+      auto start = clip->TimeToSamples(std::max(.0, t0 - startTime));
+      auto end = clip->TimeToSamples(std::min(endTime, t1) - startTime);
 
       auto len = ( end - start );
       for( decltype(len) done = 0; done < len; done += maxAtOnce )
@@ -1540,11 +1688,12 @@ void WaveTrack::Disjoin(double t0, double t1)
                      seqEnd = curSamplePos;
                   if( seqEnd - seqStart + 1 > minSamples )
                   {
-                     regions.push_back(Region(
-                        seqStart.as_double() / GetRate()
-                                              + clip->GetPlayStartTime(),
-                        seqEnd.as_double() / GetRate()
-                                              + clip->GetPlayStartTime()));
+                     regions.push_back(
+                        Region(
+                           startTime + clip->SamplesToTime(seqStart),
+                           startTime + clip->SamplesToTime(seqEnd)
+                        )
+                     );
                   }
                   seqStart = -1;
                }
@@ -1587,9 +1736,10 @@ void WaveTrack::Join(double t0, double t1)
    if( clipsToDelete.size() == 0 )
       return;
 
-   auto t = clipsToDelete[0]->GetSequenceStartTime();
+   auto t = clipsToDelete[0]->GetPlayStartTime();
    //preserve left trim data if any
-   newClip = CreateClip(t, clipsToDelete[0]->GetName());
+   newClip = CreateClip(clipsToDelete[0]->GetSequenceStartTime(),
+      clipsToDelete[0]->GetName());
    
    for (const auto &clip : clipsToDelete)
    {
@@ -1701,68 +1851,55 @@ bool IsValidChannel(const int nValue)
 }
 }
 
-bool WaveTrack::HandleXMLTag(const wxChar *tag, const wxChar **attrs)
+bool WaveTrack::HandleXMLTag(const std::string_view& tag, const AttributesList &attrs)
 {
-   if (!wxStrcmp(tag, wxT("wavetrack"))) {
+   if (tag == "wavetrack") {
       double dblValue;
       long nValue;
-      while(*attrs) {
-         const wxChar *attr = *attrs++;
-         const wxChar *value = *attrs++;
 
-         if (!value)
-            break;
+      for (auto pair : attrs)
+      {
+         auto attr = pair.first;
+         auto value = pair.second;
 
-         const wxString strValue = value;
-         if (!wxStrcmp(attr, wxT("rate")))
+         if (attr == "rate")
          {
             // mRate is an int, but "rate" in the project file is a float.
-            if (!XMLValueChecker::IsGoodString(strValue) ||
-                  !Internat::CompatibleToDouble(strValue, &dblValue) ||
+            if (!value.TryGet(dblValue) ||
                   (dblValue < 1.0) || (dblValue > 1000000.0)) // allow a large range to be read
                return false;
+
             mRate = lrint(dblValue);
          }
-         else if (!wxStrcmp(attr, wxT("offset")) &&
-                  XMLValueChecker::IsGoodString(strValue) &&
-                  Internat::CompatibleToDouble(strValue, &dblValue))
+         else if (attr == "offset" && value.TryGet(dblValue))
          {
             // Offset is only relevant for legacy project files. The value
             // is cached until the actual WaveClip containing the legacy
             // track is created.
             mLegacyProjectFileOffset = dblValue;
          }
-         else if (this->PlayableTrack::HandleXMLAttribute(attr, value))
+         else if (this->WritableSampleTrack::HandleXMLAttribute(attr, value))
          {}
-         else if (this->Track::HandleCommonXMLAttribute(attr, strValue))
+         else if (this->Track::HandleCommonXMLAttribute(attr, value))
             ;
-         else if (!wxStrcmp(attr, wxT("gain")) &&
-                  XMLValueChecker::IsGoodString(strValue) &&
-                  Internat::CompatibleToDouble(strValue, &dblValue))
+         else if (attr == "gain" && value.TryGet(dblValue))
             mGain = dblValue;
-         else if (!wxStrcmp(attr, wxT("pan")) &&
-                  XMLValueChecker::IsGoodString(strValue) &&
-                  Internat::CompatibleToDouble(strValue, &dblValue) &&
+         else if (attr == "pan" && value.TryGet(dblValue) &&
                   (dblValue >= -1.0) && (dblValue <= 1.0))
             mPan = dblValue;
-         else if (!wxStrcmp(attr, wxT("channel")))
+         else if (attr == "channel")
          {
-            if (!XMLValueChecker::IsGoodInt(strValue) || !strValue.ToLong(&nValue) ||
+            if (!value.TryGet(nValue) ||
                   !IsValidChannel(nValue))
                return false;
             mChannel = static_cast<Track::ChannelType>( nValue );
          }
-         else if (!wxStrcmp(attr, wxT("linked")) &&
-                  XMLValueChecker::IsGoodInt(strValue) && strValue.ToLong(&nValue))
+         else if (attr == "linked" && value.TryGet(nValue))
             SetLinkType(ToLinkType(nValue));
-         else if (!wxStrcmp(attr, wxT("colorindex")) &&
-                  XMLValueChecker::IsGoodString(strValue) &&
-                  strValue.ToLong(&nValue))
+         else if (attr == "colorindex" && value.TryGet(nValue))
             // Don't use SetWaveColorIndex as it sets the clips too.
             mWaveColorIndex  = nValue;
-         else if (!wxStrcmp(attr, wxT("sampleformat")) &&
-                  XMLValueChecker::IsGoodInt(strValue) &&
-                  strValue.ToLong(&nValue) &&
+         else if (attr == "sampleformat" && value.TryGet(nValue) &&
                   Sequence::IsValidSampleFormat(nValue))
             mFormat = static_cast<sampleFormat>(nValue);
       } // while
@@ -1772,33 +1909,33 @@ bool WaveTrack::HandleXMLTag(const wxChar *tag, const wxChar **attrs)
    return false;
 }
 
-void WaveTrack::HandleXMLEndTag(const wxChar * WXUNUSED(tag))
+void WaveTrack::HandleXMLEndTag(const std::string_view&  WXUNUSED(tag))
 {
    // In case we opened a pre-multiclip project, we need to
    // simulate closing the waveclip tag.
-   NewestOrNewClip()->HandleXMLEndTag(wxT("waveclip"));
+   NewestOrNewClip()->HandleXMLEndTag("waveclip");
 }
 
-XMLTagHandler *WaveTrack::HandleXMLChild(const wxChar *tag)
+XMLTagHandler *WaveTrack::HandleXMLChild(const std::string_view& tag)
 {
    //
    // This is legacy code (1.2 and previous) and is not called for NEW projects!
    //
-   if (!wxStrcmp(tag, wxT("sequence")) || !wxStrcmp(tag, wxT("envelope")))
+   if (tag == "sequence" || tag == "envelope")
    {
       // This is a legacy project, so set the cached offset
       NewestOrNewClip()->SetSequenceStartTime(mLegacyProjectFileOffset);
 
       // Legacy project file tracks are imported as one single wave clip
-      if (!wxStrcmp(tag, wxT("sequence")))
+      if (tag == "sequence")
          return NewestOrNewClip()->GetSequence();
-      else if (!wxStrcmp(tag, wxT("envelope")))
+      else if (tag == "envelope")
          return NewestOrNewClip()->GetEnvelope();
    }
 
    // JKC... for 1.1.0, one step better than what we had, but still badly broken.
-   //If we see a waveblock at this level, we'd better generate a sequence.
-   if( !wxStrcmp( tag, wxT("waveblock" )))
+   // If we see a waveblock at this level, we'd better generate a sequence.
+   if (tag == "waveblock")
    {
       // This is a legacy project, so set the cached offset
       NewestOrNewClip()->SetSequenceStartTime(mLegacyProjectFileOffset);
@@ -1809,7 +1946,7 @@ XMLTagHandler *WaveTrack::HandleXMLChild(const wxChar *tag)
    //
    // This is for the NEW file format (post-1.2)
    //
-   if (!wxStrcmp(tag, wxT("waveclip")))
+   if (tag == "waveclip")
       return CreateClip();
    else
       return NULL;
@@ -1822,7 +1959,7 @@ void WaveTrack::WriteXML(XMLWriter &xmlFile) const
    this->Track::WriteCommonXMLAttributes( xmlFile );
    xmlFile.WriteAttr(wxT("channel"), mChannel);
    xmlFile.WriteAttr(wxT("linked"), static_cast<int>(GetLinkType()));
-   this->PlayableTrack::WriteXMLAttributes(xmlFile);
+   this->WritableSampleTrack::WriteXMLAttributes(xmlFile);
    xmlFile.WriteAttr(wxT("rate"), mRate);
    xmlFile.WriteAttr(wxT("gain"), (double)mGain);
    xmlFile.WriteAttr(wxT("pan"), (double)mPan);
@@ -1852,16 +1989,6 @@ bool WaveTrack::CloseLock()
       clip->CloseLock();
 
    return true;
-}
-
-AUDACITY_DLL_API sampleCount WaveTrack::TimeToLongSamples(double t0) const
-{
-   return sampleCount( floor(t0 * mRate + 0.5) );
-}
-
-double WaveTrack::LongSamplesToTime(sampleCount pos) const
-{
-   return pos.as_double() / mRate;
 }
 
 double WaveTrack::GetStartTime() const
@@ -2570,7 +2697,7 @@ void WaveTrack::MergeClips(int clipidx1, int clipidx2)
 
 /*! @excsafety{Weak} -- Partial completion may leave clips at differing sample rates!
 */
-void WaveTrack::Resample(int rate, ProgressDialog *progress)
+void WaveTrack::Resample(int rate, BasicUI::ProgressDialog *progress)
 {
    for (const auto &clip : mClips)
       clip->Resample(rate, progress);
@@ -2600,224 +2727,6 @@ WaveClipPointers WaveTrack::SortedClipArray()
 WaveClipConstPointers WaveTrack::SortedClipArray() const
 {
    return FillSortedClipArray<WaveClipConstPointers>(mClips);
-}
-
-///Deletes all clips' wavecaches.  Careful, This may not be threadsafe.
-void WaveTrack::ClearWaveCaches()
-{
-   for (const auto &clip : mClips)
-      clip->ClearWaveCache();
-}
-
-WaveTrackCache::~WaveTrackCache()
-{
-}
-
-void WaveTrackCache::SetTrack(const std::shared_ptr<const WaveTrack> &pTrack)
-{
-   if (mPTrack != pTrack) {
-      if (pTrack) {
-         mBufferSize = pTrack->GetMaxBlockSize();
-         if (!mPTrack ||
-             mPTrack->GetMaxBlockSize() != mBufferSize) {
-            Free();
-            mBuffers[0].data = Floats{ mBufferSize };
-            mBuffers[1].data = Floats{ mBufferSize };
-         }
-      }
-      else
-         Free();
-      mPTrack = pTrack;
-      mNValidBuffers = 0;
-   }
-}
-
-const float *WaveTrackCache::GetFloats(
-   sampleCount start, size_t len, bool mayThrow)
-{
-   constexpr auto format = floatSample;
-   if (format == floatSample && len > 0) {
-      const auto end = start + len;
-
-      bool fillFirst = (mNValidBuffers < 1);
-      bool fillSecond = (mNValidBuffers < 2);
-
-      // Discard cached results that we no longer need
-      if (mNValidBuffers > 0 &&
-          (end <= mBuffers[0].start ||
-           start >= mBuffers[mNValidBuffers - 1].end())) {
-         // Complete miss
-         fillFirst = true;
-         fillSecond = true;
-      }
-      else if (mNValidBuffers == 2 &&
-               start >= mBuffers[1].start &&
-               end > mBuffers[1].end()) {
-         // Request starts in the second buffer and extends past it.
-         // Discard the first buffer.
-         // (But don't deallocate the buffer space.)
-         mBuffers[0] .swap ( mBuffers[1] );
-         fillSecond = true;
-         mNValidBuffers = 1;
-      }
-      else if (mNValidBuffers > 0 &&
-         start < mBuffers[0].start &&
-         0 <= mPTrack->GetBlockStart(start)) {
-         // Request is not a total miss but starts before the cache,
-         // and there is a clip to fetch from.
-         // Not the access pattern for drawing spectrogram or playback,
-         // but maybe scrubbing causes this.
-         // Move the first buffer into second place, and later
-         // refill the first.
-         // (This case might be useful when marching backwards through
-         // the track, as with scrubbing.)
-         mBuffers[0] .swap ( mBuffers[1] );
-         fillFirst = true;
-         fillSecond = false;
-         // Cache is not in a consistent state yet
-         mNValidBuffers = 0;
-      }
-
-      // Refill buffers as needed
-      if (fillFirst) {
-         const auto start0 = mPTrack->GetBlockStart(start);
-         if (start0 >= 0) {
-            const auto len0 = mPTrack->GetBestBlockSize(start0);
-            wxASSERT(len0 <= mBufferSize);
-            if (!mPTrack->GetFloats(
-                  mBuffers[0].data.get(), start0, len0,
-                  fillZero, mayThrow))
-               return nullptr;
-            mBuffers[0].start = start0;
-            mBuffers[0].len = len0;
-            if (!fillSecond &&
-                mBuffers[0].end() != mBuffers[1].start)
-               fillSecond = true;
-            // Keep the partially updated state consistent:
-            mNValidBuffers = fillSecond ? 1 : 2;
-         }
-         else {
-            // Request may fall between the clips of a track.
-            // Invalidate all.  WaveTrack::Get() will return zeroes.
-            mNValidBuffers = 0;
-            fillSecond = false;
-         }
-      }
-      wxASSERT(!fillSecond || mNValidBuffers > 0);
-      if (fillSecond) {
-         mNValidBuffers = 1;
-         const auto end0 = mBuffers[0].end();
-         if (end > end0) {
-            const auto start1 = mPTrack->GetBlockStart(end0);
-            if (start1 == end0) {
-               const auto len1 = mPTrack->GetBestBlockSize(start1);
-               wxASSERT(len1 <= mBufferSize);
-               if (!mPTrack->GetFloats(mBuffers[1].data.get(), start1, len1, fillZero, mayThrow))
-                  return nullptr;
-               mBuffers[1].start = start1;
-               mBuffers[1].len = len1;
-               mNValidBuffers = 2;
-            }
-         }
-      }
-      wxASSERT(mNValidBuffers < 2 || mBuffers[0].end() == mBuffers[1].start);
-
-      samplePtr buffer = nullptr; // will point into mOverlapBuffer
-      auto remaining = len;
-
-      // Possibly get an initial portion that is uncached
-
-      // This may be negative
-      const auto initLen =
-         mNValidBuffers < 1 ? sampleCount( len )
-            : std::min(sampleCount( len ), mBuffers[0].start - start);
-
-      if (initLen > 0) {
-         // This might be fetching zeroes between clips
-         mOverlapBuffer.Resize(len, format);
-         // initLen is not more than len:
-         auto sinitLen = initLen.as_size_t();
-         if (!mPTrack->GetFloats(
-            // See comment below about casting
-            reinterpret_cast<float *>(mOverlapBuffer.ptr()),
-            start, sinitLen, fillZero, mayThrow))
-            return nullptr;
-         wxASSERT( sinitLen <= remaining );
-         remaining -= sinitLen;
-         start += initLen;
-         buffer = mOverlapBuffer.ptr() + sinitLen * SAMPLE_SIZE(format);
-      }
-
-      // Now satisfy the request from the buffers
-      for (int ii = 0; ii < mNValidBuffers && remaining > 0; ++ii) {
-         const auto starti = start - mBuffers[ii].start;
-         // Treatment of initLen above establishes this loop invariant,
-         // and statements below preserve it:
-         wxASSERT(starti >= 0);
-
-         // This may be negative
-         const auto leni =
-            std::min( sampleCount( remaining ), mBuffers[ii].len - starti );
-         if (initLen <= 0 && leni == len) {
-            // All is contiguous already.  We can completely avoid copying
-            // leni is nonnegative, therefore start falls within mBuffers[ii],
-            // so starti is bounded between 0 and buffer length
-            return mBuffers[ii].data.get() + starti.as_size_t() ;
-         }
-         else if (leni > 0) {
-            // leni is nonnegative, therefore start falls within mBuffers[ii]
-            // But we can't satisfy all from one buffer, so copy
-            if (!buffer) {
-               mOverlapBuffer.Resize(len, format);
-               buffer = mOverlapBuffer.ptr();
-            }
-            // leni is positive and not more than remaining
-            const size_t size = sizeof(float) * leni.as_size_t();
-            // starti is less than mBuffers[ii].len and nonnegative
-            memcpy(buffer, mBuffers[ii].data.get() + starti.as_size_t(), size);
-            wxASSERT( leni <= remaining );
-            remaining -= leni.as_size_t();
-            start += leni;
-            buffer += size;
-         }
-      }
-
-      if (remaining > 0) {
-         // Very big request!
-         // Fall back to direct fetch
-         if (!buffer) {
-            mOverlapBuffer.Resize(len, format);
-            buffer = mOverlapBuffer.ptr();
-         }
-         // See comment below about casting
-         if (!mPTrack->GetFloats( reinterpret_cast<float*>(buffer),
-            start, remaining, fillZero, mayThrow))
-            return 0;
-      }
-
-      // Overlap buffer was meant for the more general support of sample formats
-      // besides float, which explains the cast
-      return reinterpret_cast<const float*>(mOverlapBuffer.ptr());
-   }
-   else {
-#if 0
-      // Cache works only for float format.
-      mOverlapBuffer.Resize(len, format);
-      if (mPTrack->Get(mOverlapBuffer.ptr(), format, start, len, fillZero, mayThrow))
-         return mOverlapBuffer.ptr();
-#else
-      // No longer handling other than float format.  Therefore len is 0.
-#endif
-      return nullptr;
-   }
-}
-
-void WaveTrackCache::Free()
-{
-   mBuffers[0].Free();
-   mBuffers[1].Free();
-   mOverlapBuffer.Free();
-   mNValidBuffers = 0;
 }
 
 auto WaveTrack::AllClipsIterator::operator ++ () -> AllClipsIterator &
@@ -2907,4 +2816,43 @@ WaveTrackFactory &WaveTrackFactory::Reset( AudacityProject &project )
 void WaveTrackFactory::Destroy( AudacityProject &project )
 {
    project.AttachedObjects::Assign( key2, nullptr );
+}
+
+ProjectFormatExtensionsRegistry::Extension smartClipsExtension(
+   [](const AudacityProject& project) -> ProjectFormatVersion
+   {
+      const TrackList& trackList = TrackList::Get(project);
+
+      for (auto wt : trackList.Any<const WaveTrack>())
+      {
+         for (const auto& clip : wt->GetAllClips())
+         {
+            if (clip->GetTrimLeft() > 0.0 || clip->GetTrimRight() > 0.0)
+               return { 3, 1, 0, 0 };
+         }
+      }
+
+      return BaseProjectFormatVersion;
+   }
+);
+
+StringSetting AudioTrackNameSetting{
+   L"/GUI/TrackNames/DefaultTrackName",
+   // Computed default value depends on chosen language
+   []{ return DefaultName.Translation(); }
+};
+
+// Bug 825 is essentially that SyncLock requires EditClipsCanMove.
+// SyncLock needs rethinking, but meanwhile this function
+// fixes the issues of Bug 825 by allowing clips to move when in
+// SyncLock.
+bool GetEditClipsCanMove()
+{
+   bool mIsSyncLocked;
+   gPrefs->Read(wxT("/GUI/SyncLockTracks"), &mIsSyncLocked, false);
+   if( mIsSyncLocked )
+      return true;
+   bool editClipsCanMove;
+   gPrefs->Read(wxT("/GUI/EditClipCanMove"), &editClipsCanMove, false);
+   return editClipsCanMove;
 }

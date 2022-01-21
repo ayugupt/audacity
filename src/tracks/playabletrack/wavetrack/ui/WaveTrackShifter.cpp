@@ -7,6 +7,7 @@
 #include "ViewInfo.h"
 #include "../../../../WaveClip.h"
 #include "../../../../WaveTrack.h"
+#include "WaveTrackView.h"
 
 class WaveTrackShifter final : public TrackShifter {
 public:
@@ -19,18 +20,28 @@ public:
    Track &GetTrack() const override { return *mpTrack; }
 
    HitTestResult HitTest(
-      double time, const ViewInfo &viewInfo, HitTestParams* ) override
+      double time, const ViewInfo &viewInfo, HitTestParams* params) override
    {
       auto pClip = [&]() {
-         auto ts = mpTrack->TimeToLongSamples(time);
-         
          for (auto clip : mpTrack->GetClips())
          {
-            const auto c0 = mpTrack->TimeToLongSamples(clip->GetPlayStartTime());
-            const auto c1 = mpTrack->TimeToLongSamples(clip->GetPlayEndTime());
-            if (ts >= c0 && ts < c1)
-               return clip;
+            if (params != nullptr)
+            {
+               if (WaveTrackView::HitTest(
+                      *clip, viewInfo, params->rect,
+                      { params->xx, params->yy }))
+                  return clip;
+            }
+            else
+            {
+               // WithinPlayRegion misses first sample, which breaks moving
+               // "selected" clip. Probable WithinPlayRegion should be fixed
+               // instead?
+               if (clip->GetPlayStartTime() <= time && time < clip->GetPlayEndTime())
+                  return clip;
+            }
          }
+
          return std::shared_ptr<WaveClip>{};
       }();
       
@@ -67,7 +78,7 @@ public:
          const auto c1 = mpTrack->TimeToLongSamples(clip->GetPlayEndTime());
          return 
              mpTrack->TimeToLongSamples(interval.Start()) < c1 && 
-             mpTrack->TimeToLongSamples(interval.End()) >= c0;
+             mpTrack->TimeToLongSamples(interval.End()) > c0;
       });
    }
 

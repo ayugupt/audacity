@@ -47,7 +47,6 @@ is time to refresh some aspect of the screen.
 #include "TrackPanel.h"
 #include "TrackPanelConstants.h"
 
-#include <wx/app.h>
 #include <wx/setup.h> // for wxUSE_* macros
 
 #include "AdornedRulerPanel.h"
@@ -62,6 +61,7 @@ is time to refresh some aspect of the screen.
 #include "ProjectStatus.h"
 #include "ProjectWindow.h"
 #include "Theme.h"
+#include "TrackArt.h"
 #include "TrackPanelMouseEvent.h"
 #include "TrackPanelResizeHandle.h"
 //#define DEBUG_DRAW_TIMING 1
@@ -294,18 +294,20 @@ TrackPanel::TrackPanel(wxWindow * parent, wxWindowID id,
       &TrackPanel::OnIdle, this);
 
    // Register for tracklist updates
-   mTracks->Bind(EVT_TRACKLIST_RESIZING,
-                    &TrackPanel::OnTrackListResizing,
-                    this);
-   mTracks->Bind(EVT_TRACKLIST_ADDITION,
-                    &TrackPanel::OnTrackListResizing,
-                    this);
-   mTracks->Bind(EVT_TRACKLIST_DELETION,
-                    &TrackPanel::OnTrackListDeletion,
-                    this);
-   mTracks->Bind(EVT_TRACKLIST_TRACK_REQUEST_VISIBLE,
-                    &TrackPanel::OnEnsureVisible,
-                    this);
+   mTrackListScubscription =
+   mTracks->Subscribe([this](const TrackListEvent &event){
+      switch (event.mType) {
+      case TrackListEvent::RESIZING:
+      case TrackListEvent::ADDITION:
+         OnTrackListResizing(event); break;
+      case TrackListEvent::DELETION:
+         OnTrackListDeletion(); break;
+      case TrackListEvent::TRACK_REQUEST_VISIBLE:
+         OnEnsureVisible(event); break;
+      default:
+         break;
+      }
+   });
 
    auto theProject = GetProject();
    theProject->Bind(
@@ -315,12 +317,8 @@ TrackPanel::TrackPanel(wxWindow * parent, wxWindowID id,
 
    theProject->Bind(EVT_UNDO_RESET, &TrackPanel::OnUndoReset, this);
 
-   wxTheApp->Bind(EVT_AUDIOIO_PLAYBACK,
-                     &TrackPanel::OnAudioIO,
-                     this);
-   wxTheApp->Bind(EVT_AUDIOIO_CAPTURE,
-                     &TrackPanel::OnAudioIO,
-                     this);
+   mAudioIOScubscription =
+      AudioIO::Get()->Subscribe(*this, &TrackPanel::OnAudioIO);
    UpdatePrefs();
 }
 
@@ -380,7 +378,7 @@ void TrackPanel::OnIdle(wxIdleEvent& event)
    // The window must be ready when the timer fires (#1401)
    if (IsShownOnScreen())
    {
-      mTimer.Start(kTimerInterval, FALSE);
+      mTimer.Start(std::chrono::milliseconds{kTimerInterval}.count(), FALSE);
 
       // Timer is started, we don't need the event anymore
       GetProjectFrame( *GetProject() ).Unbind(wxEVT_IDLE,
@@ -427,10 +425,7 @@ void TrackPanel::OnTimer(wxTimerEvent& )
    }
 
    // Notify listeners for timer ticks
-   {
-      wxCommandEvent e(EVT_TRACK_PANEL_TIMER);
-      p->ProcessEvent(e);
-   }
+   window.GetPlaybackScroller().OnTimer();
 
    DrawOverlays(false);
    mRuler->DrawOverlays(false);
@@ -666,21 +661,20 @@ void TrackPanel::UpdateViewIfNoTracks()
 
 // The tracks positions within the list have changed, so update the vertical
 // ruler size for the track that triggered the event.
-void TrackPanel::OnTrackListResizing(TrackListEvent & e)
+void TrackPanel::OnTrackListResizing(const TrackListEvent &e)
 {
    auto t = e.mpTrack.lock();
    // A deleted track can trigger the event.  In which case do nothing here.
    // A deleted track can have a valid pointer but no owner, bug 2060
    if( t && t->HasOwner() )
       UpdateVRuler(t.get());
-   e.Skip();
 
    // fix for bug 2477
    mListener->TP_RedrawScrollbars();
 }
 
 // Tracks have been removed from the list.
-void TrackPanel::OnTrackListDeletion(wxEvent & e)
+void TrackPanel::OnTrackListDeletion()
 {
    // copy shared_ptr for safety, as in HandleClick
    auto handle = Target();
@@ -693,8 +687,6 @@ void TrackPanel::OnTrackListDeletion(wxEvent & e)
    TrackFocus( *GetProject() ).Get();
 
    UpdateVRulerSize();
-
-   e.Skip();
 }
 
 void TrackPanel::OnKeyDown(wxKeyEvent & event)
@@ -726,7 +718,7 @@ void TrackPanel::OnMouseEvent(wxMouseEvent & event)
       // When this timer fires, we call TrackPanel::OnTimer and
       // possibly update the screen for offscreen scrolling.
       mTimer.Stop();
-      mTimer.Start(kTimerInterval, FALSE);
+      mTimer.Start(std::chrono::milliseconds{kTimerInterval}.count(), FALSE);
    }
 
 
@@ -811,9 +803,10 @@ void TrackPanel::Refresh(bool eraseBackground /* = TRUE */,
    CallAfter([this]{ CellularPanel::HandleCursorForPresentMouseState(); } );
 }
 
-void TrackPanel::OnAudioIO(wxCommandEvent & evt)
+void TrackPanel::OnAudioIO(AudioIOEvent evt)
 {
-   evt.Skip();
+   if (evt.type == AudioIOEvent::MONITOR)
+      return;
    // Some hit tests want to change their cursor to and from the ban symbol
    CallAfter( [this]{ CellularPanel::HandleCursorForPresentMouseState(); } );
 }
@@ -974,10 +967,10 @@ void TrackPanel::UpdateTrackVRuler(Track *t)
          // This causes ruler size in the track to be reassigned:
          TrackVRulerControls::Get( *iter->second ).UpdateRuler( rect );
          // But we want to know the maximum width and height over all sub-views:
-         vRulerSize.IncTo( t->vrulerSize );
+         vRulerSize.IncTo( {t->vrulerSize.first, t->vrulerSize.second} );
          yy = nextY;
       }
-      t->vrulerSize = vRulerSize;
+      t->vrulerSize = {vRulerSize.x, vRulerSize.y};
    }
 }
 
@@ -987,7 +980,7 @@ void TrackPanel::UpdateVRulerSize()
    if (trackRange) {
       wxSize s { 0, 0 };
       for (auto t : trackRange)
-         s.IncTo(t->vrulerSize);
+         s.IncTo({t->vrulerSize.first, t->vrulerSize.second});
 
       if (mViewInfo->GetVRulerWidth() != s.GetWidth()) {
          mViewInfo->SetVRulerWidth( s.GetWidth() );
@@ -1005,10 +998,9 @@ void TrackPanel::OnTrackMenu(Track *t)
 }
 
 // Tracks have been removed from the list.
-void TrackPanel::OnEnsureVisible(TrackListEvent & e)
+void TrackPanel::OnEnsureVisible(const TrackListEvent & e)
 {
-   e.Skip();
-   bool modifyState = e.GetInt();
+   bool modifyState = e.mExtra;
 
    auto pTrack = e.mpTrack.lock();
    auto t = pTrack.get();

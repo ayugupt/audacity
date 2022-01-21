@@ -20,20 +20,19 @@
 
 #include "GUIPrefs.h"
 
-#include <wx/app.h>
 #include <wx/defs.h>
 
 #include "FileNames.h"
 #include "Languages.h"
-#include "../Theme.h"
+#include "Theme.h"
 #include "Prefs.h"
 #include "../ShuttleGui.h"
 
 #include "Decibels.h"
 
 #include "ThemePrefs.h"
-#include "../AColor.h"
-#include "../widgets/AudacityMessageBox.h"
+#include "AColor.h"
+#include "GUISettings.h"
 
 GUIPrefs::GUIPrefs(wxWindow * parent, wxWindowID winid)
 /* i18n-hint: refers to Audacity's user interface settings */
@@ -231,7 +230,7 @@ bool GUIPrefs::Commit()
 
    // If language has changed, we want to change it now, not on the next reboot.
    wxString lang = gPrefs->Read(wxT("/Locale/Language"), wxT(""));
-   wxString usedLang = SetLang(lang);
+   wxString usedLang = GUISettings::SetLang(lang);
    // Bug 1523: Previously didn't check no-language (=System Language)
    if (!(lang.empty() || lang == L"System") && (lang != usedLang)) {
       // lang was not usable and is not system language.  We got overridden.
@@ -240,31 +239,14 @@ bool GUIPrefs::Commit()
    }
 
    // Reads preference GUITheme
-   theTheme.LoadPreferredTheme();
+   {
+      wxBusyCursor busy;
+      theTheme.LoadPreferredTheme();
+      theTheme.DeleteUnusedThemes();
+   }
    ThemePrefs::ApplyUpdatedImages();
 
    return true;
-}
-
-wxString GUIPrefs::SetLang( const wxString & lang )
-{
-   auto result = Languages::SetLang(FileNames::AudacityPathList(), lang);
-   if (!(lang.empty() || lang == L"System") && result != lang)
-      ::AudacityMessageBox(
-         XO("Language \"%s\" is unknown").Format( lang ) );
-
-#ifdef EXPERIMENTAL_CEE_NUMBERS_OPTION
-   bool forceCeeNumbers;
-   gPrefs->Read(wxT("/Locale/CeeNumberFormat"), &forceCeeNumbers, false);
-   if( forceCeeNumbers )
-      Internat::SetCeeNumberFormat();
-#endif
-
-#ifdef __WXMAC__
-      wxApp::s_macHelpMenuTitleName = _("&Help");
-#endif
-
-   return result;
 }
 
 int ShowClippingPrefsID()

@@ -82,6 +82,7 @@ time warp info and AudioIOListener and whether the playback is looped.
 #include <stdlib.h>
 #include <algorithm>
 #include <numeric>
+#include <optional>
 
 #ifdef __WXMSW__
 #include <malloc.h>
@@ -117,16 +118,16 @@ time warp info and AudioIOListener and whether the playback is looped.
 #include "Decibels.h"
 #include "Prefs.h"
 #include "Project.h"
-#include "DBConnection.h"
-#include "ProjectFileIO.h"
 #include "ProjectWindows.h"
-#include "ViewInfo.h" // for PlayRegionEvent
 #include "WaveTrack.h"
+#include "TransactionScope.h"
 
 #include "effects/RealtimeEffectManager.h"
 #include "QualitySettings.h"
 #include "widgets/AudacityMessageBox.h"
 #include "BasicUI.h"
+
+#include "Gain.h"
 
 #ifdef EXPERIMENTAL_AUTOMATED_INPUT_LEVEL_ADJUSTMENT
    #define LOWER_BOUND 0.0
@@ -140,10 +141,6 @@ AudioIO *AudioIO::Get()
 {
    return static_cast< AudioIO* >( AudioIOBase::Get() );
 }
-
-wxDEFINE_EVENT(EVT_AUDIOIO_PLAYBACK, wxCommandEvent);
-wxDEFINE_EVENT(EVT_AUDIOIO_CAPTURE, wxCommandEvent);
-wxDEFINE_EVENT(EVT_AUDIOIO_MONITOR, wxCommandEvent);
 
 // static
 int AudioIoCallback::mNextStreamToken = 0;
@@ -343,9 +340,10 @@ AudioIO::AudioIO()
    HandleDeviceChange();
 #else
    mEmulateMixerOutputVol = true;
-   mMixerOutputVol = 1.0;
    mInputMixerWorks = false;
 #endif
+
+   mMixerOutputVol = AudioIOPlaybackVolume.Read();
 
    mLastPlaybackTimeMillis = 0;
 }
@@ -386,19 +384,18 @@ void AudioIO::SetMixer(int inputSource, float recordVolume,
                        float playbackVolume)
 {
    mMixerOutputVol = playbackVolume;
+   AudioIOPlaybackVolume.Write(mMixerOutputVol);
+
 #if defined(USE_PORTMIXER)
    PxMixer *mixer = mPortMixer;
    if( !mixer )
       return;
 
    float oldRecordVolume = Px_GetInputVolume(mixer);
-   float oldPlaybackVolume = Px_GetPCMOutputVolume(mixer);
 
    AudioIoCallback::SetMixer(inputSource);
    if( oldRecordVolume != recordVolume )
       Px_SetInputVolume(mixer, recordVolume);
-   if( oldPlaybackVolume != playbackVolume )
-      Px_SetPCMOutputVolume(mixer, playbackVolume);
 
 #endif
 }
@@ -406,6 +403,8 @@ void AudioIO::SetMixer(int inputSource, float recordVolume,
 void AudioIO::GetMixer(int *recordDevice, float *recordVolume,
                        float *playbackVolume)
 {
+   *playbackVolume = mMixerOutputVol;
+
 #if defined(USE_PORTMIXER)
 
    PxMixer *mixer = mPortMixer;
@@ -419,11 +418,6 @@ void AudioIO::GetMixer(int *recordDevice, float *recordVolume,
       else
          *recordVolume = 1.0f;
 
-      if (mEmulateMixerOutputVol)
-         *playbackVolume = mMixerOutputVol;
-      else
-         *playbackVolume = Px_GetPCMOutputVolume(mixer);
-
       return;
    }
 
@@ -431,17 +425,11 @@ void AudioIO::GetMixer(int *recordDevice, float *recordVolume,
 
    *recordDevice = 0;
    *recordVolume = 1.0f;
-   *playbackVolume = mMixerOutputVol;
 }
 
 bool AudioIO::InputMixerWorks()
 {
    return mInputMixerWorks;
-}
-
-bool AudioIO::OutputMixerEmulated()
-{
-   return mEmulateMixerOutputVol;
 }
 
 wxArrayString AudioIO::GetInputSourceNames()
@@ -624,8 +612,11 @@ bool AudioIO::StartPortAudioStream(const AudioIOStartStreamOptions &options,
    // On my test machine, no more than 3 attempts are required.
    unsigned int maxTries = 1;
 #ifdef __WXGTK__
-   if (DeviceManager::Instance()->GetTimeSinceRescan() < 10)
-      maxTries = 5;
+   {
+      using namespace std::chrono;
+      if (DeviceManager::Instance()->GetTimeSinceRescan() < 10s)
+         maxTries = 5;
+   }
 #endif
 
    for (unsigned int tries = 0; tries < maxTries; tries++) {
@@ -639,7 +630,8 @@ bool AudioIO::StartPortAudioStream(const AudioIOStartStreamOptions &options,
          break;
       }
       wxLogDebug("Attempt %u to open capture stream failed with: %d", 1 + tries, mLastPaError);
-      wxMilliSleep(1000);
+      using namespace std::chrono;
+      std::this_thread::sleep_for(1s);
    }
 
 
@@ -692,25 +684,11 @@ void AudioIO::SetOwningProject(
    }
 
    mOwningProject = pProject;
-
-   if (pProject)
-      ViewInfo::Get( *pProject ).playRegion.Bind(
-         EVT_PLAY_REGION_CHANGE, AudioIO::LoopPlayUpdate);
 }
 
 void AudioIO::ResetOwningProject()
 {
-   if ( auto pOwningProject = mOwningProject.lock() )
-      ViewInfo::Get( *pOwningProject ).playRegion.Unbind(
-         EVT_PLAY_REGION_CHANGE, AudioIO::LoopPlayUpdate);
-
    mOwningProject.reset();
-}
-
-void AudioIO::LoopPlayUpdate( PlayRegionEvent &evt )
-{
-   evt.Skip();
-   AudioIO::Get()->mPlaybackSchedule.MessageProducer( evt );
 }
 
 void AudioIO::StartMonitoring( const AudioIOStartStreamOptions &options )
@@ -745,10 +723,7 @@ void AudioIO::StartMonitoring( const AudioIOStartStreamOptions &options )
       return;
    }
 
-   wxCommandEvent e(EVT_AUDIOIO_MONITOR);
-   e.SetEventObject( pOwningProject.get() );
-   e.SetInt(true);
-   wxTheApp->ProcessEvent(e);
+   Publish({ pOwningProject.get(), AudioIOEvent::MONITOR, true });
 
    // FIXME: TRAP_ERR PaErrorCode 'noted' but not reported in StartMonitoring.
    // Now start the PortAudio stream!
@@ -765,9 +740,12 @@ void AudioIO::StartMonitoring( const AudioIOStartStreamOptions &options )
 }
 
 int AudioIO::StartStream(const TransportTracks &tracks,
-                         double t0, double t1,
-                         const AudioIOStartStreamOptions &options)
+   double t0, double t1, double mixerLimit,
+   const AudioIOStartStreamOptions &options)
 {
+   const auto &pStartTime = options.pStartTime;
+   t1 = std::min(t1, mixerLimit);
+
    mLostSamples = 0;
    mLostCaptureIntervals.clear();
    mDetectDropouts =
@@ -794,8 +772,10 @@ int AudioIO::StartStream(const TransportTracks &tracks,
 
    if (mPortStreamV19) {
       StopStream();
-      while(mPortStreamV19)
-         wxMilliSleep( 50 );
+      while(mPortStreamV19) {
+         using namespace std::chrono;
+         std::this_thread::sleep_for(50ms);
+      }
    }
 
 #ifdef __WXGTK__
@@ -926,8 +906,14 @@ int AudioIO::StartStream(const TransportTracks &tracks,
       return 0;
    }
 
-   if ( ! AllocateBuffers( options, tracks, t0, t1, options.rate ) )
-      return 0;
+   {
+      double mixerStart = t0;
+      if (pStartTime)
+         mixerStart = std::min( mixerStart, *pStartTime );
+      if ( ! AllocateBuffers( options, tracks,
+         mixerStart, mixerLimit, options.rate ) )
+         return 0;
+   }
 
    if (mNumPlaybackChannels > 0)
    {
@@ -958,10 +944,10 @@ int AudioIO::StartStream(const TransportTracks &tracks,
    AILASetStartTime();
 #endif
 
-   if (options.pStartTime)
+   if (pStartTime)
    {
       // Calculate the NEW time position
-      const auto time = mPlaybackSchedule.ClampTrackTime( *options.pStartTime );
+      const auto time = *pStartTime;
 
       // Main thread's initialization of mTime
       mPlaybackSchedule.SetTrackTime( time );
@@ -984,11 +970,12 @@ int AudioIO::StartStream(const TransportTracks &tracks,
    mAudioThreadShouldCallTrackBufferExchangeOnce = true;
 
    while( mAudioThreadShouldCallTrackBufferExchangeOnce ) {
-      auto interval = 50ull;
+      using namespace std::chrono;
+      auto interval = 50ms;
       if (options.playbackStreamPrimer) {
          interval = options.playbackStreamPrimer();
       }
-      wxMilliSleep( interval );
+      std::this_thread::sleep_for(interval);
    }
 
    if(mNumPlaybackChannels > 0 || mNumCaptureChannels > 0) {
@@ -1052,20 +1039,9 @@ int AudioIO::StartStream(const TransportTracks &tracks,
 
    auto pOwningProject = mOwningProject.lock();
    if (mNumPlaybackChannels > 0)
-   {
-      wxCommandEvent e(EVT_AUDIOIO_PLAYBACK);
-      e.SetEventObject( pOwningProject.get() );
-      e.SetInt(true);
-      wxTheApp->ProcessEvent(e);
-   }
-
+      Publish({ pOwningProject.get(), AudioIOEvent::PLAYBACK, true });
    if (mNumCaptureChannels > 0)
-   {
-      wxCommandEvent e(EVT_AUDIOIO_CAPTURE);
-      e.SetEventObject( pOwningProject.get() );
-      e.SetInt(true);
-      wxTheApp->ProcessEvent(e);
-   }
+      Publish({ pOwningProject.get(), AudioIOEvent::CAPTURE, true });
 
    commit = true;
    return mStreamToken;
@@ -1139,7 +1115,7 @@ bool AudioIO::AllocateBuffers(
    // usually, make fillings fewer and longer for less CPU usage.
    // What Audio thread produces for playback is then consumed by the PortAudio
    // thread, in many smaller pieces.
-   double playbackTime = lrint(times.batchSize * mRate) / mRate;
+   double playbackTime = lrint(times.batchSize.count() * mRate) / mRate;
    
    wxASSERT( playbackTime >= 0 );
    mPlaybackSamplesToCopy = playbackTime * mRate;
@@ -1162,7 +1138,7 @@ bool AudioIO::AllocateBuffers(
             // Allocate output buffers.  For every output track we allocate
             // a ring buffer of ten seconds
             auto playbackBufferSize =
-               (size_t)lrint(mRate * mPlaybackRingBufferSecs);
+               (size_t)lrint(mRate * mPlaybackRingBufferSecs.count());
 
             // Always make at least one playback buffer
             mPlaybackBuffers.reinit(
@@ -1173,7 +1149,7 @@ bool AudioIO::AllocateBuffers(
             const auto &warpOptions =
                policy.MixerWarpOptions(mPlaybackSchedule);
 
-            mPlaybackQueueMinimum = lrint( mRate * times.latency );
+            mPlaybackQueueMinimum = lrint( mRate * times.latency.count() );
             mPlaybackQueueMinimum =
                std::min( mPlaybackQueueMinimum, playbackBufferSize );
 
@@ -1192,26 +1168,30 @@ bool AudioIO::AllocateBuffers(
                   std::make_unique<RingBuffer>(floatSample, playbackBufferSize);
 
                // use track time for the end time, not real time!
-               WaveTrackConstArray mixTracks;
+               SampleTrackConstArray mixTracks;
                mixTracks.push_back(mPlaybackTracks[i]);
 
-               double endTime;
+               double startTime, endTime;
                if (make_iterator_range(tracks.prerollTracks)
-                      .contains(mPlaybackTracks[i]))
+                      .contains(mPlaybackTracks[i])) {
                   // Stop playing this track after pre-roll
+                  startTime = mPlaybackSchedule.mT0;
                   endTime = t0;
-               else
+               }
+               else {
                   // Pass t1 -- not mT1 as may have been adjusted for latency
                   // -- so that overdub recording stops playing back samples
                   // at the right time, though transport may continue to record
+                  startTime = t0;
                   endTime = t1;
+               }
 
                mPlaybackMixers[i] = std::make_unique<Mixer>
                   (mixTracks,
                   // Don't throw for read errors, just play silence:
                   false,
                   warpOptions,
-                  mPlaybackSchedule.mT0,
+                  startTime,
                   endTime,
                   1,
                   std::max( mPlaybackSamplesToCopy, mPlaybackQueueMinimum ),
@@ -1272,7 +1252,7 @@ bool AudioIO::AllocateBuffers(
          // In the extraordinarily rare case that we can't even afford 100
          // samples, just give up.
          auto playbackBufferSize =
-            (size_t)lrint(mRate * mPlaybackRingBufferSecs);
+            (size_t)lrint(mRate * mPlaybackRingBufferSecs.count());
          if(playbackBufferSize < 100 || mPlaybackSamplesToCopy < 100)
          {
             AudacityMessageBox( XO("Out of memory!") );
@@ -1362,8 +1342,10 @@ void AudioIO::StopStream()
       // If we can gracefully fade out in 200ms, with the faded-out play buffers making it through
       // the sound card, then do so.  If we can't, don't wait around.  Just stop quickly and accept
       // there will be a click.
-      if( mbMicroFades  && (latency < 150 ))
-         wxMilliSleep( latency + 50);
+      if( mbMicroFades  && (latency < 150 )) {
+         using namespace std::chrono;
+         std::this_thread::sleep_for(milliseconds{latency + 50});
+      }
    }
 
    wxMutexLocker locker(mSuspendAudioThread);
@@ -1412,7 +1394,8 @@ void AudioIO::StopStream()
    mUpdateMeters = false;
    while(mUpdatingMeters) {
       ::wxSafeYield();
-      wxMilliSleep( 50 );
+      using namespace std::chrono;
+      std::this_thread::sleep_for(50ms);
    }
 
    // Turn off HW playthrough if PortMixer is being used
@@ -1456,9 +1439,11 @@ void AudioIO::StopStream()
 
       while( mAudioThreadShouldCallTrackBufferExchangeOnce )
       {
-         // LLL:  Experienced recursive yield here...once.
-         wxTheApp->Yield(true); // Pass true for onlyIfNeeded to avoid recursive call error.
-         wxMilliSleep( 50 );
+         //FIXME: Seems like this block of the UI thread isn't bounded,
+         //but we cannot allow event handlers to see incompletely terminated
+         //AudioIO state with wxYield (or similar functions)
+         using namespace std::chrono;
+         std::this_thread::sleep_for(50ms);
       }
 
       //
@@ -1516,12 +1501,9 @@ void AudioIO::StopStream()
          {
             // This scope may combine many splittings of wave tracks
             // into one transaction, lessening the number of checkpoints
-            Optional<TransactionScope> pScope;
-            auto pOwningProject = mOwningProject.lock();
-            if (pOwningProject) {
-               auto &pIO = ProjectFileIO::Get(*pOwningProject);
-               pScope.emplace(pIO.GetConnection(), "Dropouts");
-            }
+            std::optional<TransactionScope> pScope;
+            if (auto pOwningProject = mOwningProject.lock())
+               pScope.emplace(*pOwningProject, "Dropouts");
             for (auto &interval : mLostCaptureIntervals) {
                auto &start = interval.first;
                auto duration = interval.second;
@@ -1574,22 +1556,16 @@ void AudioIO::StopStream()
    bool wasMonitoring = mStreamToken == 0;
    mStreamToken = 0;
 
-   if (mNumPlaybackChannels > 0)
    {
-      wxCommandEvent e(EVT_AUDIOIO_PLAYBACK);
       auto pOwningProject = mOwningProject.lock();
-      e.SetEventObject(pOwningProject.get());
-      e.SetInt(false);
-      wxTheApp->ProcessEvent(e);
-   }
-   
-   if (mNumCaptureChannels > 0)
-   {
-      wxCommandEvent e(wasMonitoring ? EVT_AUDIOIO_MONITOR : EVT_AUDIOIO_CAPTURE);
-      auto pOwningProject = mOwningProject.lock();
-      e.SetEventObject(pOwningProject.get());
-      e.SetInt(false);
-      wxTheApp->ProcessEvent(e);
+      if (mNumPlaybackChannels > 0)
+         Publish({ pOwningProject.get(), AudioIOEvent::PLAYBACK, false });
+      if (mNumCaptureChannels > 0)
+         Publish({ pOwningProject.get(),
+            wasMonitoring
+               ? AudioIOEvent::MONITOR
+               : AudioIOEvent::CAPTURE,
+            false });
    }
 
    mNumCaptureChannels = 0;
@@ -1833,15 +1809,16 @@ void AudioIO::FillPlayBuffers()
    // user interface.
    bool done = false;
    do {
-      const auto [frames, toProduce] =
+      const auto slice =
          policy.GetPlaybackSlice(mPlaybackSchedule, available);
+      const auto &[frames, toProduce] = slice;
 
       // Update the time queue.  This must be done before writing to the
       // ring buffers of samples, for proper synchronization with the
       // consumer side in the PortAudio thread, which reads the time
       // queue after reading the sample queues.  The sample queues use
       // atomic variables, the time queue doesn't.
-      mPlaybackSchedule.mTimeQueue.Producer(mPlaybackSchedule, frames);
+      mPlaybackSchedule.mTimeQueue.Producer(mPlaybackSchedule, slice);
 
       for (size_t i = 0; i < mPlaybackTracks.size(); i++)
       {
@@ -1869,9 +1846,6 @@ void AudioIO::FillPlayBuffers()
 
       available -= frames;
       // wxASSERT(available >= 0); // don't assert on this thread
-
-      // Poll for selection change events
-      mPlaybackSchedule.MessageConsumer();
 
       done = policy.RepositionPlayback( mPlaybackSchedule, mPlaybackMixers,
          frames, available );
@@ -1919,12 +1893,9 @@ void AudioIO::DrainRecordBuffers()
          // This scope may combine many appendings of wave tracks,
          // and also an autosave, into one transaction,
          // lessening the number of checkpoints
-         Optional<TransactionScope> pScope;
-         auto pOwningProject = mOwningProject.lock();
-         if (pOwningProject) {
-            auto &pIO = ProjectFileIO::Get( *pOwningProject );
-            pScope.emplace(pIO.GetConnection(), "Recording");
-         }
+         std::optional<TransactionScope> pScope;
+         if (auto pOwningProject = mOwningProject.lock())
+            pScope.emplace(*pOwningProject, "Recording");
 
          bool newBlocks = false;
 
@@ -2350,8 +2321,9 @@ void AudioIoCallback::AddToOutputChannel( unsigned int chan,
          outputMeterFloats[numPlaybackChannels*i+chan] +=
             gain*tempBuf[i];
 
-   if (mEmulateMixerOutputVol)
-      gain *= mMixerOutputVol;
+   // DV: We use gain to emulate panning.
+   // Let's keep the old behavior for panning.
+   gain *= ExpGain(mMixerOutputVol);
 
    float oldGain = vt->GetOldChannelGain(chan);
    if( gain != oldGain )
@@ -2853,8 +2825,7 @@ void AudioIoCallback::SendVuOutputMeterData(
       //    The problem there occurs if Software Playthrough is on.
       //    Could conditionally do the update here if Software Playthrough is off,
       //    and in TrackPanel::OnTimer() if Software Playthrough is on, but not now.
-      // PRL 12 Jul 2015: and what was in TrackPanel::OnTimer is now handled by means of event
-      // type EVT_TRACK_PANEL_TIMER
+      // PRL 12 Jul 2015: and what was in TrackPanel::OnTimer is now handled by means of track panel timer events
       //MixerBoard* pMixerBoard = mOwningProject->GetMixerBoard();
       //if (pMixerBoard)
       //   pMixerBoard->UpdateMeters(GetStreamTime(),
@@ -2953,7 +2924,7 @@ int AudioIoCallback::AudioCallback(
       mNumPauseFrames += framesPerBuffer;
 
    for( auto &ext : Extensions() ) {
-      ext.ComputeOtherTimings(mRate,
+      ext.ComputeOtherTimings(mRate, IsPaused(),
          timeInfo,
          framesPerBuffer);
       ext.FillOtherBuffers(
@@ -2968,10 +2939,10 @@ int AudioIoCallback::AudioCallback(
    float *tempFloats = (float *)alloca(framesPerBuffer*sizeof(float)*
                              MAX(numCaptureChannels,numPlaybackChannels));
 
-   bool bVolEmulationActive = 
-      (outputBuffer && mEmulateMixerOutputVol &&  mMixerOutputVol != 1.0);
-   // outputMeterFloats is the scratch pad for the output meter.  
-   // we can often reuse the existing outputBuffer and save on allocating 
+   bool bVolEmulationActive =
+      (outputBuffer && mMixerOutputVol != 1.0);
+   // outputMeterFloats is the scratch pad for the output meter.
+   // we can often reuse the existing outputBuffer and save on allocating
    // something new.
    float *outputMeterFloats = bVolEmulationActive ?
          (float *)alloca(framesPerBuffer*numPlaybackChannels * sizeof(float)) :
@@ -3056,7 +3027,8 @@ int AudioIoCallback::CallbackDoSeek()
    mAudioThreadTrackBufferExchangeLoopRunning = false;
    while( mAudioThreadTrackBufferExchangeLoopActive )
    {
-      wxMilliSleep( 50 );
+      using namespace std::chrono;
+      std::this_thread::sleep_for(50ms);
    }
 
    // Calculate the NEW time position, in the PortAudio callback
@@ -3087,7 +3059,8 @@ int AudioIoCallback::CallbackDoSeek()
    mAudioThreadShouldCallTrackBufferExchangeOnce = true;
    while( mAudioThreadShouldCallTrackBufferExchangeOnce )
    {
-      wxMilliSleep( 50 );
+      using namespace std::chrono;
+      std::this_thread::sleep_for(50ms);
    }
 
    // Reenable the audio thread

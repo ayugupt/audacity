@@ -18,6 +18,7 @@ Paul Licameli split from AudacityProject.cpp
 #include "widgets/NumericTextCtrl.h"
 #include "prefs/TracksBehaviorsPrefs.h"
 #include "XMLWriter.h"
+#include "XMLTagHandler.h"
 
 wxDEFINE_EVENT(EVT_PROJECT_SETTINGS_CHANGE, wxCommandEvent);
 
@@ -58,10 +59,6 @@ ProjectSettings::ProjectSettings(AudacityProject &project)
       NumericConverter::TIME,
       gPrefs->Read(wxT("/SelectionFormat"), wxT("")))
 }
-, mAudioTimeFormat{ NumericTextCtrl::LookupFormat(
-   NumericConverter::TIME,
-   gPrefs->Read(wxT("/AudioTimeFormat"), wxT("hh:mm:ss")))
-}
 , mFrequencySelectionFormatName{ NumericTextCtrl::LookupFormat(
    NumericConverter::FREQUENCY,
    gPrefs->Read(wxT("/FrequencySelectionFormatName"), wxT("")) )
@@ -69,6 +66,10 @@ ProjectSettings::ProjectSettings(AudacityProject &project)
 , mBandwidthSelectionFormatName{ NumericTextCtrl::LookupFormat(
    NumericConverter::BANDWIDTH,
    gPrefs->Read(wxT("/BandwidthSelectionFormatName"), wxT("")) )
+}
+, mAudioTimeFormat{ NumericTextCtrl::LookupFormat(
+   NumericConverter::TIME,
+   gPrefs->Read(wxT("/AudioTimeFormat"), wxT("hh:mm:ss")))
 }
 , mSnapTo( gPrefs->Read(wxT("/SnapTo"), SNAP_OFF) )
 , mCurrentBrushRadius ( 5 )
@@ -194,7 +195,7 @@ void ProjectSettings::SetSyncLock(bool flag)
    }
 }
 
-static ProjectFileIORegistry::WriterEntry entry {
+static ProjectFileIORegistry::AttributeWriterEntry entry {
 [](const AudacityProject &project, XMLWriter &xmlFile){
    auto &settings = ProjectSettings::Get(project);
    xmlFile.WriteAttr(wxT("snapto"), settings.GetSnapTo() ? wxT("on") : wxT("off"));
@@ -213,19 +214,21 @@ static ProjectFileIORegistry::AttributeReaderEntries entries {
    // PRL:  The following have persisted as per-project settings for long.
    // Maybe that should be abandoned.  Enough to save changes in the user
    // preference file.
-   { L"snapto", [](auto &settings, auto value){
-      settings.SetSnapTo(wxString(value) == wxT("on") ? true : false);
+   { "snapto", [](auto &settings, auto value){
+      settings.SetSnapTo(value.ToWString() == wxT("on") ? true : false);
    } },
-   { L"selectionformat", [](auto &settings, auto value){
-      settings.SetSelectionFormat(
-         NumericConverter::LookupFormat( NumericConverter::TIME, value) );
+   { "selectionformat", [](auto &settings, auto value){
+      settings.SetSelectionFormat(NumericConverter::LookupFormat(
+              NumericConverter::TIME, value.ToWString()));
    } },
-   { L"frequencyformat", [](auto &settings, auto value){
+   { "frequencyformat", [](auto &settings, auto value){
       settings.SetFrequencySelectionFormatName(
-         NumericConverter::LookupFormat( NumericConverter::FREQUENCY, value ) );
+              NumericConverter::LookupFormat(
+                 NumericConverter::FREQUENCY, value.ToWString()));
    } },
-   { L"bandwidthformat", [](auto &settings, auto value){
+   { "bandwidthformat", [](auto &settings, auto value){
       settings.SetBandwidthSelectionFormatName(
-         NumericConverter::LookupFormat( NumericConverter::BANDWIDTH, value ) );
+              NumericConverter::LookupFormat(
+                 NumericConverter::BANDWIDTH, value.ToWString()));
    } },
 } };

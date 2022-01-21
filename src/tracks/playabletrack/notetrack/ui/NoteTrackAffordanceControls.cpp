@@ -15,10 +15,11 @@
 #include "../../../ui/AffordanceHandle.h"
 #include "../../../ui/SelectHandle.h"
 #include "../../../ui/TrackView.h"
-#include "../../../../AllThemeResources.h"
-#include "../../../../AColor.h"
+#include "AllThemeResources.h"
+#include "AColor.h"
 #include "../../../../NoteTrack.h"
 #include "ViewInfo.h"
+#include "../../../../TrackArt.h"
 #include "../../../../TrackArtist.h"
 #include "../../../../TrackPanelMouseEvent.h"
 #include "../../../../TrackPanelDrawingContext.h"
@@ -30,7 +31,7 @@
 #include "../../../../SelectionState.h"
 #include "../../../../ProjectSettings.h"
 #include "../../../../RefreshCode.h"
-#include "../../../../Theme.h"
+#include "Theme.h"
 
 class NoteTrackAffordanceHandle final : public AffordanceHandle
 {
@@ -91,7 +92,8 @@ std::vector<UIHandlePtr> NoteTrackAffordanceControls::HitTest(const TrackPanelMo
     {
         results.push_back(
             SelectHandle::HitTest(
-                mSelectHandle, state, pProject, std::static_pointer_cast<TrackView>(track->GetTrackView())
+                mSelectHandle, state, pProject,
+                TrackView::Get(*track).shared_from_this()
             )
         );
     }
